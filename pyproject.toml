@@ -38,6 +38,21 @@ dependencies = [
 [[tool.uv.index]]
 url = "https://pypi.nvidia.com/"
 
+# PyPI's default torch wheel is a cu126 build with no Blackwell (sm_100/sm_120)
+# kernels, so RTX 50-series GPUs (e.g. RTX 5090) hit
+# "CUDA error: no kernel image is available for execution on the device".
+# Pin torch/torchvision to PyTorch's cu128 index instead, which does ship
+# Blackwell kernels and remains backward-compatible with older (Ampere/Ada)
+# GPUs.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+torchvision = [{ index = "pytorch-cu128" }]
+
 # sim2real = [
 #     "unitree-sdk2py",
 #     "loop-rate-limiters>=1.1.0",

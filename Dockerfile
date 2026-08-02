@@ -11,7 +11,7 @@
 #
 # See docs/vastai_k1.md for how to push this image and launch it on vast.ai.
 
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \

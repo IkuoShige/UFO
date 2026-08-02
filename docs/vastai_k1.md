@@ -25,9 +25,15 @@ path](robot_config_training.md), and how to run it on a rented GPU box on
   the explicit `columns:` block in the manifest).
 - `scripts/download_k1_lafan1_data.sh` — downloads and stages that dataset
   under `humanoidverse/data/k1_lafan1/`.
-- `Dockerfile` — CUDA 12.6 image with `uv sync`, `booster_assets` cloned as a
+- `Dockerfile` — CUDA 12.8 image with `uv sync`, `booster_assets` cloned as a
   sibling directory, the K1 LAFAN1 CSVs staged, and the motion cache
-  pre-built.
+  pre-built. `pyproject.toml` pins `torch`/`torchvision` to PyTorch's cu128
+  index (see the comment above `[tool.uv.sources]`) instead of the PyPI
+  default cu126 build, because cu126 wheels have no Blackwell (sm_100/sm_120)
+  kernels — on an RTX 50-series GPU (e.g. RTX 5090) that fails at env
+  creation with `CUDA error: no kernel image is available for execution on
+  the device`. cu128 wheels remain backward-compatible with older
+  Ampere/Ada GPUs (verified on a local RTX 3090).
 
 This was smoke-tested locally (`--smoke`, single GPU) end to end: robot XML
 load -> env/observation/reward manager construction -> motion library load
