@@ -1,0 +1,646 @@
+name: k1_22dof
+xml_path: ../booster_assets/robots/K1/K1_22dof.xml
+base_body: Trunk
+root_quat_order: xyzw
+coordinate_system: z_up
+dof_unit: rad
+control_joints:
+  mode: explicit
+  names:
+    - AAHead_yaw
+    - Head_pitch
+    - ALeft_Shoulder_Pitch
+    - Left_Shoulder_Roll
+    - Left_Elbow_Pitch
+    - Left_Elbow_Yaw
+    - ARight_Shoulder_Pitch
+    - Right_Shoulder_Roll
+    - Right_Elbow_Pitch
+    - Right_Elbow_Yaw
+    - Left_Hip_Pitch
+    - Left_Hip_Roll
+    - Left_Hip_Yaw
+    - Left_Knee_Pitch
+    - Left_Ankle_Pitch
+    - Left_Ankle_Roll
+    - Right_Hip_Pitch
+    - Right_Hip_Roll
+    - Right_Hip_Yaw
+    - Right_Knee_Pitch
+    - Right_Ankle_Pitch
+    - Right_Ankle_Roll
+feet:
+  - left_foot_link
+  - right_foot_link
+hands:
+  - left_hand_link
+  - right_hand_link
+key_bodies:
+  - Trunk
+  - left_hand_link
+  - right_hand_link
+  - left_foot_link
+  - right_foot_link
+default_dof_pos: {}
+training:
+  hydra_robot: k1/k1_22dof_auto
+  hydra_overrides: []
+  semantics:
+    contact_bodies:
+      - left_foot_link
+      - right_foot_link
+    undesired_contact_bodies:
+      - Trunk
+      - Left_Hip_Pitch
+      - Left_Hip_Roll
+      - Left_Hip_Yaw
+      - Right_Hip_Pitch
+      - Right_Hip_Roll
+      - Right_Hip_Yaw
+    torso_name: Trunk
+    left_ankle_dof_names:
+      - Left_Ankle_Pitch
+      - Left_Ankle_Roll
+    right_ankle_dof_names:
+      - Right_Ankle_Pitch
+      - Right_Ankle_Roll
+  init_state:
+    pos:
+      - 0.0
+      - 0.0
+      - 0.55
+    rot:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    lin_vel:
+      - 0.0
+      - 0.0
+      - 0.0
+    ang_vel:
+      - 0.0
+      - 0.0
+      - 0.0
+    default_joint_angles:
+      AAHead_yaw: 0.0
+      Head_pitch: 0.0
+      ALeft_Shoulder_Pitch: 0.0
+      Left_Shoulder_Roll: 0.0
+      Left_Elbow_Pitch: 0.0
+      Left_Elbow_Yaw: 0.0
+      ARight_Shoulder_Pitch: 0.0
+      Right_Shoulder_Roll: 0.0
+      Right_Elbow_Pitch: 0.0
+      Right_Elbow_Yaw: 0.0
+      Left_Hip_Pitch: 0.0
+      Left_Hip_Roll: 0.0
+      Left_Hip_Yaw: 0.0
+      Left_Knee_Pitch: 0.0
+      Left_Ankle_Pitch: 0.0
+      Left_Ankle_Roll: 0.0
+      Right_Hip_Pitch: 0.0
+      Right_Hip_Roll: 0.0
+      Right_Hip_Yaw: 0.0
+      Right_Knee_Pitch: 0.0
+      Right_Ankle_Pitch: 0.0
+      Right_Ankle_Roll: 0.0
+  control:
+    action_scale: 0.25
+    action_clip_value: 5.0
+    normalize_action_to: 5.0
+    effort_limit_scale: 1.0
+    effort_limit:
+      - 6.0
+      - 6.0
+      - 14.0
+      - 14.0
+      - 14.0
+      - 14.0
+      - 14.0
+      - 14.0
+      - 14.0
+      - 14.0
+      - 30.0
+      - 35.0
+      - 20.0
+      - 40.0
+      - 20.0
+      - 20.0
+      - 30.0
+      - 35.0
+      - 20.0
+      - 40.0
+      - 20.0
+      - 20.0
+    velocity_limit:
+      - 18.0
+      - 18.0
+      - 18.0
+      - 18.0
+      - 18.0
+      - 18.0
+      - 18.0
+      - 18.0
+      - 18.0
+      - 18.0
+      - 7.1
+      - 12.9
+      - 18.1
+      - 12.5
+      - 18.1
+      - 18.1
+      - 7.1
+      - 12.9
+      - 18.1
+      - 12.5
+      - 18.1
+      - 18.1
+    stiffness:
+      AAHead_yaw: 40.0
+      Head_pitch: 40.0
+      ALeft_Shoulder_Pitch: 20.0
+      Left_Shoulder_Roll: 20.0
+      Left_Elbow_Pitch: 20.0
+      Left_Elbow_Yaw: 20.0
+      ARight_Shoulder_Pitch: 20.0
+      Right_Shoulder_Roll: 20.0
+      Right_Elbow_Pitch: 20.0
+      Right_Elbow_Yaw: 20.0
+      Left_Hip_Pitch: 80.0
+      Left_Hip_Roll: 80.0
+      Left_Hip_Yaw: 80.0
+      Left_Knee_Pitch: 80.0
+      Left_Ankle_Pitch: 30.0
+      Left_Ankle_Roll: 30.0
+      Right_Hip_Pitch: 80.0
+      Right_Hip_Roll: 80.0
+      Right_Hip_Yaw: 80.0
+      Right_Knee_Pitch: 80.0
+      Right_Ankle_Pitch: 30.0
+      Right_Ankle_Roll: 30.0
+    damping:
+      AAHead_yaw: 2.0
+      Head_pitch: 2.0
+      ALeft_Shoulder_Pitch: 1.0
+      Left_Shoulder_Roll: 1.0
+      Left_Elbow_Pitch: 1.0
+      Left_Elbow_Yaw: 1.0
+      ARight_Shoulder_Pitch: 1.0
+      Right_Shoulder_Roll: 1.0
+      Right_Elbow_Pitch: 1.0
+      Right_Elbow_Yaw: 1.0
+      Left_Hip_Pitch: 3.0
+      Left_Hip_Roll: 3.0
+      Left_Hip_Yaw: 3.0
+      Left_Knee_Pitch: 3.0
+      Left_Ankle_Pitch: 1.5
+      Left_Ankle_Roll: 1.5
+      Right_Hip_Pitch: 3.0
+      Right_Hip_Roll: 3.0
+      Right_Hip_Yaw: 3.0
+      Right_Knee_Pitch: 3.0
+      Right_Ankle_Pitch: 1.5
+      Right_Ankle_Roll: 1.5
+  actuator:
+    source: yaml
+    joints:
+      AAHead_yaw:
+        effort_limit: 6.0
+        velocity_limit: 18.0
+        armature: 0.002
+        friction: 0.0
+        damping: 0.0
+      Head_pitch:
+        effort_limit: 6.0
+        velocity_limit: 18.0
+        armature: 0.002
+        friction: 0.0
+        damping: 0.0
+      ALeft_Shoulder_Pitch:
+        effort_limit: 14.0
+        velocity_limit: 18.0
+        armature: 0.001
+        friction: 0.0
+        damping: 0.0
+      Left_Shoulder_Roll:
+        effort_limit: 14.0
+        velocity_limit: 18.0
+        armature: 0.001
+        friction: 0.0
+        damping: 0.0
+      Left_Elbow_Pitch:
+        effort_limit: 14.0
+        velocity_limit: 18.0
+        armature: 0.001
+        friction: 0.0
+        damping: 0.0
+      Left_Elbow_Yaw:
+        effort_limit: 14.0
+        velocity_limit: 18.0
+        armature: 0.001
+        friction: 0.0
+        damping: 0.0
+      ARight_Shoulder_Pitch:
+        effort_limit: 14.0
+        velocity_limit: 18.0
+        armature: 0.001
+        friction: 0.0
+        damping: 0.0
+      Right_Shoulder_Roll:
+        effort_limit: 14.0
+        velocity_limit: 18.0
+        armature: 0.001
+        friction: 0.0
+        damping: 0.0
+      Right_Elbow_Pitch:
+        effort_limit: 14.0
+        velocity_limit: 18.0
+        armature: 0.001
+        friction: 0.0
+        damping: 0.0
+      Right_Elbow_Yaw:
+        effort_limit: 14.0
+        velocity_limit: 18.0
+        armature: 0.001
+        friction: 0.0
+        damping: 0.0
+      Left_Hip_Pitch:
+        effort_limit: 30.0
+        velocity_limit: 7.1
+        armature: 0.0478125
+        friction: 0.0
+        damping: 0.0
+      Left_Hip_Roll:
+        effort_limit: 35.0
+        velocity_limit: 12.9
+        armature: 0.0339552
+        friction: 0.0
+        damping: 0.0
+      Left_Hip_Yaw:
+        effort_limit: 20.0
+        velocity_limit: 18.1
+        armature: 0.0282528
+        friction: 0.0
+        damping: 0.0
+      Left_Knee_Pitch:
+        effort_limit: 40.0
+        velocity_limit: 12.5
+        armature: 0.095625
+        friction: 0.0
+        damping: 0.0
+      Left_Ankle_Pitch:
+        effort_limit: 20.0
+        velocity_limit: 18.1
+        armature: 0.0565
+        friction: 0.0
+        damping: 0.0
+      Left_Ankle_Roll:
+        effort_limit: 20.0
+        velocity_limit: 18.1
+        armature: 0.0565
+        friction: 0.0
+        damping: 0.0
+      Right_Hip_Pitch:
+        effort_limit: 30.0
+        velocity_limit: 7.1
+        armature: 0.0478125
+        friction: 0.0
+        damping: 0.0
+      Right_Hip_Roll:
+        effort_limit: 35.0
+        velocity_limit: 12.9
+        armature: 0.0339552
+        friction: 0.0
+        damping: 0.0
+      Right_Hip_Yaw:
+        effort_limit: 20.0
+        velocity_limit: 18.1
+        armature: 0.0282528
+        friction: 0.0
+        damping: 0.0
+      Right_Knee_Pitch:
+        effort_limit: 40.0
+        velocity_limit: 12.5
+        armature: 0.095625
+        friction: 0.0
+        damping: 0.0
+      Right_Ankle_Pitch:
+        effort_limit: 20.0
+        velocity_limit: 18.1
+        armature: 0.0565
+        friction: 0.0
+        damping: 0.0
+      Right_Ankle_Roll:
+        effort_limit: 20.0
+        velocity_limit: 18.1
+        armature: 0.0565
+        friction: 0.0
+        damping: 0.0
+metadata:
+  generated_from_xml: ../booster_assets/robots/K1/K1_22dof.xml
+  generated_by: humanoidverse.tools.robot_inspect
+  review_status: draft
+  warnings:
+    - MuJoCo XML remains the source of truth for qpos/qvel/action layout and actuator
+      order; URDF is used only for auxiliary draft hints.
+    - Joint 'AAHead_yaw' effort_limit from URDF joint 'AAHead_yaw'.
+    - Joint 'AAHead_yaw' velocity_limit from URDF joint 'AAHead_yaw'.
+    - Joint 'Head_pitch' effort_limit from URDF joint 'Head_pitch'.
+    - Joint 'Head_pitch' velocity_limit from URDF joint 'Head_pitch'.
+    - Joint 'ALeft_Shoulder_Pitch' effort_limit from URDF joint 'ALeft_Shoulder_Pitch'.
+    - Joint 'ALeft_Shoulder_Pitch' velocity_limit from URDF joint 'ALeft_Shoulder_Pitch'.
+    - Joint 'Left_Shoulder_Roll' effort_limit from URDF joint 'Left_Shoulder_Roll'.
+    - Joint 'Left_Shoulder_Roll' velocity_limit from URDF joint 'Left_Shoulder_Roll'.
+    - Joint 'Left_Elbow_Pitch' effort_limit from URDF joint 'Left_Elbow_Pitch'.
+    - Joint 'Left_Elbow_Pitch' velocity_limit from URDF joint 'Left_Elbow_Pitch'.
+    - Joint 'Left_Elbow_Yaw' effort_limit from URDF joint 'Left_Elbow_Yaw'.
+    - Joint 'Left_Elbow_Yaw' velocity_limit from URDF joint 'Left_Elbow_Yaw'.
+    - Joint 'ARight_Shoulder_Pitch' effort_limit from URDF joint 'ARight_Shoulder_Pitch'.
+    - Joint 'ARight_Shoulder_Pitch' velocity_limit from URDF joint 'ARight_Shoulder_Pitch'.
+    - Joint 'Right_Shoulder_Roll' effort_limit from URDF joint 'Right_Shoulder_Roll'.
+    - Joint 'Right_Shoulder_Roll' velocity_limit from URDF joint 'Right_Shoulder_Roll'.
+    - Joint 'Right_Elbow_Pitch' effort_limit from URDF joint 'Right_Elbow_Pitch'.
+    - Joint 'Right_Elbow_Pitch' velocity_limit from URDF joint 'Right_Elbow_Pitch'.
+    - Joint 'Right_Elbow_Yaw' effort_limit from URDF joint 'Right_Elbow_Yaw'.
+    - Joint 'Right_Elbow_Yaw' velocity_limit from URDF joint 'Right_Elbow_Yaw'.
+    - Joint 'Left_Hip_Pitch' effort_limit from URDF joint 'Left_Hip_Pitch'.
+    - Joint 'Left_Hip_Pitch' velocity_limit from URDF joint 'Left_Hip_Pitch'.
+    - Joint 'Left_Hip_Roll' effort_limit from URDF joint 'Left_Hip_Roll'.
+    - Joint 'Left_Hip_Roll' velocity_limit from URDF joint 'Left_Hip_Roll'.
+    - Joint 'Left_Hip_Yaw' effort_limit from URDF joint 'Left_Hip_Yaw'.
+    - Joint 'Left_Hip_Yaw' velocity_limit from URDF joint 'Left_Hip_Yaw'.
+    - Joint 'Left_Knee_Pitch' effort_limit from URDF joint 'Left_Knee_Pitch'.
+    - Joint 'Left_Knee_Pitch' velocity_limit from URDF joint 'Left_Knee_Pitch'.
+    - Joint 'Left_Ankle_Pitch' effort_limit from URDF joint 'Left_Ankle_Pitch'.
+    - Joint 'Left_Ankle_Pitch' velocity_limit from URDF joint 'Left_Ankle_Pitch'.
+    - Joint 'Left_Ankle_Roll' effort_limit from URDF joint 'Left_Ankle_Roll'.
+    - Joint 'Left_Ankle_Roll' velocity_limit from URDF joint 'Left_Ankle_Roll'.
+    - Joint 'Right_Hip_Pitch' effort_limit from URDF joint 'Right_Hip_Pitch'.
+    - Joint 'Right_Hip_Pitch' velocity_limit from URDF joint 'Right_Hip_Pitch'.
+    - Joint 'Right_Hip_Roll' effort_limit from URDF joint 'Right_Hip_Roll'.
+    - Joint 'Right_Hip_Roll' velocity_limit from URDF joint 'Right_Hip_Roll'.
+    - Joint 'Right_Hip_Yaw' effort_limit from URDF joint 'Right_Hip_Yaw'.
+    - Joint 'Right_Hip_Yaw' velocity_limit from URDF joint 'Right_Hip_Yaw'.
+    - Joint 'Right_Knee_Pitch' effort_limit from URDF joint 'Right_Knee_Pitch'.
+    - Joint 'Right_Knee_Pitch' velocity_limit from URDF joint 'Right_Knee_Pitch'.
+    - Joint 'Right_Ankle_Pitch' effort_limit from URDF joint 'Right_Ankle_Pitch'.
+    - Joint 'Right_Ankle_Pitch' velocity_limit from URDF joint 'Right_Ankle_Pitch'.
+    - Joint 'Right_Ankle_Roll' effort_limit from URDF joint 'Right_Ankle_Roll'.
+    - Joint 'Right_Ankle_Roll' velocity_limit from URDF joint 'Right_Ankle_Roll'.
+    - Could not infer any left/right symmetric DOF pairs from XML control_joint_names.
+    - 'Could not infer right-side symmetric counterparts for joints: [''Left_Shoulder_Roll'',
+      ''Left_Elbow_Pitch'', ''Left_Elbow_Yaw'', ''Left_Hip_Pitch'', ''Left_Hip_Roll'',
+      ''Left_Hip_Yaw'', ''Left_Knee_Pitch'', ''Left_Ankle_Pitch'', ''Left_Ankle_Roll'']'
+    - symmetric_dofs_idx is emitted as draft metadata only; current training/inference
+      does not consume it.
+    - No stand/default/home/init keyframe found; using model.qpos0 for default pose.
+    - PD gains generated from 'humanoid' draft template; tune stiffness/damping before
+      training.
+    - This config is XML-derived draft output. Review semantic fields, PD gains, default
+      pose, actuator parameters, contact bodies, and reward/termination-related fields
+      before formal training.
+  urdf_source: ../booster_assets/robots/K1/K1_22dof.urdf
+  matched_urdf_joints:
+    - AAHead_yaw
+    - Head_pitch
+    - ALeft_Shoulder_Pitch
+    - Left_Shoulder_Roll
+    - Left_Elbow_Pitch
+    - Left_Elbow_Yaw
+    - ARight_Shoulder_Pitch
+    - Right_Shoulder_Roll
+    - Right_Elbow_Pitch
+    - Right_Elbow_Yaw
+    - Left_Hip_Pitch
+    - Left_Hip_Roll
+    - Left_Hip_Yaw
+    - Left_Knee_Pitch
+    - Left_Ankle_Pitch
+    - Left_Ankle_Roll
+    - Right_Hip_Pitch
+    - Right_Hip_Roll
+    - Right_Hip_Yaw
+    - Right_Knee_Pitch
+    - Right_Ankle_Pitch
+    - Right_Ankle_Roll
+  semantic_hints:
+    joints:
+      AAHead_yaw:
+        - trunk
+      ALeft_Shoulder_Pitch:
+        - left
+        - shoulder
+        - trunk
+      Left_Shoulder_Roll:
+        - left
+        - shoulder
+      Left_Elbow_Pitch:
+        - elbow
+        - left
+      Left_Elbow_Yaw:
+        - elbow
+        - hand
+        - left
+      ARight_Shoulder_Pitch:
+        - right
+        - shoulder
+        - trunk
+      Right_Shoulder_Roll:
+        - right
+        - shoulder
+      Right_Elbow_Pitch:
+        - elbow
+        - right
+      Right_Elbow_Yaw:
+        - elbow
+        - hand
+        - right
+      Left_Hip_Pitch:
+        - hip
+        - left
+        - trunk
+      Left_Hip_Roll:
+        - hip
+        - left
+      Left_Hip_Yaw:
+        - hip
+        - left
+      Left_Knee_Pitch:
+        - hip
+        - knee
+        - left
+      Left_Ankle_Pitch:
+        - ankle
+        - left
+      Left_Ankle_Roll:
+        - ankle
+        - foot
+        - left
+      Right_Hip_Pitch:
+        - hip
+        - right
+        - trunk
+      Right_Hip_Roll:
+        - hip
+        - right
+      Right_Hip_Yaw:
+        - hip
+        - right
+      Right_Knee_Pitch:
+        - hip
+        - knee
+        - right
+      Right_Ankle_Pitch:
+        - ankle
+        - right
+      Right_Ankle_Roll:
+        - ankle
+        - foot
+        - right
+    links:
+      Trunk:
+        - trunk
+      Left_Arm_1:
+        - left
+      Left_Arm_2:
+        - left
+      Left_Arm_3:
+        - left
+      left_hand_link:
+        - hand
+        - left
+      Right_Arm_1:
+        - right
+      Right_Arm_2:
+        - right
+      Right_Arm_3:
+        - right
+      right_hand_link:
+        - hand
+        - right
+      Left_Hip_Pitch:
+        - hip
+        - left
+      Left_Hip_Roll:
+        - hip
+        - left
+      Left_Hip_Yaw:
+        - hip
+        - left
+      Left_Shank:
+        - left
+      Left_Ankle_Cross:
+        - ankle
+        - left
+      left_foot_link:
+        - foot
+        - left
+      Right_Hip_Pitch:
+        - hip
+        - right
+      Right_Hip_Roll:
+        - hip
+        - right
+      Right_Hip_Yaw:
+        - hip
+        - right
+      Right_Shank:
+        - right
+      Right_Ankle_Cross:
+        - ankle
+        - right
+      right_foot_link:
+        - foot
+        - right
+  merge_policy:
+    source_of_truth: mujoco_xml
+    urdf_used_for:
+      - effort_limit
+      - velocity_limit
+      - damping
+      - friction
+      - semantic_hints
+      - symmetric_dofs_idx_draft
+    prefer_urdf_limits: false
+    prefer_urdf_dynamics: true
+  symmetric_dofs_idx_draft:
+    pairs: []
+    index_pairs: []
+    unmatched_left_joints:
+      - Left_Shoulder_Roll
+      - Left_Elbow_Pitch
+      - Left_Elbow_Yaw
+      - Left_Hip_Pitch
+      - Left_Hip_Roll
+      - Left_Hip_Yaw
+      - Left_Knee_Pitch
+      - Left_Ankle_Pitch
+      - Left_Ankle_Roll
+  merged_joint_ranges:
+    AAHead_yaw:
+      - -1.0
+      - 1.0
+    Head_pitch:
+      - -0.349
+      - 0.855
+    ALeft_Shoulder_Pitch:
+      - -3.316
+      - 1.22
+    Left_Shoulder_Roll:
+      - -1.74
+      - 1.57
+    Left_Elbow_Pitch:
+      - -2.27
+      - 2.27
+    Left_Elbow_Yaw:
+      - -2.44
+      - 0.0
+    ARight_Shoulder_Pitch:
+      - -3.316
+      - 1.22
+    Right_Shoulder_Roll:
+      - -1.57
+      - 1.74
+    Right_Elbow_Pitch:
+      - -2.27
+      - 2.27
+    Right_Elbow_Yaw:
+      - 0.0
+      - 2.44
+    Left_Hip_Pitch:
+      - -3.0
+      - 2.21
+    Left_Hip_Roll:
+      - -0.4
+      - 1.57
+    Left_Hip_Yaw:
+      - -1.0
+      - 1.0
+    Left_Knee_Pitch:
+      - 0.0
+      - 2.23
+    Left_Ankle_Pitch:
+      - -0.87
+      - 0.345
+    Left_Ankle_Roll:
+      - -0.345
+      - 0.345
+    Right_Hip_Pitch:
+      - -3.0
+      - 2.21
+    Right_Hip_Roll:
+      - -1.57
+      - 0.4
+    Right_Hip_Yaw:
+      - -1.0
+      - 1.0
+    Right_Knee_Pitch:
+      - 0.0
+      - 2.23
+    Right_Ankle_Pitch:
+      - -0.87
+      - 0.345
+    Right_Ankle_Roll:
+      - -0.345
+      - 0.345

@@ -26,3 +26,4 @@ model/
 # Downloaded public motion data
 humanoidverse/data/lafan_29dof_10s-clipped.pkl
 humanoidverse/data/lafan_29dof.pkl
+humanoidverse/data/k1_lafan1/

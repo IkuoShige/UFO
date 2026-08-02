@@ -1,0 +1,20 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+_wandb
+wandb
+_smoke_runs
+runs
+cache
+checkpoint
+*.log
+
+# Motion data is fetched inside the image by scripts/download_k1_lafan1_data.sh
+# so the build doesn't depend on / duplicate whatever happens to be on the
+# host machine that runs `docker build`.
+humanoidverse/data/k1_lafan1
+humanoidverse/data/lafan_29dof_10s-clipped.pkl
+humanoidverse/data/lafan_29dof.pkl

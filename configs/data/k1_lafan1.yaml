@@ -1,0 +1,39 @@
+robot_config: configs/robots/k1_22dof.yaml
+
+datasets:
+  - name: k1_lafan1
+    format: robot_state_csv
+    source_path: ../../humanoidverse/data/k1_lafan1/*.csv
+    weight: 1.0
+    fps: 30
+    columns:
+      root_pos: [root_pos_x, root_pos_y, root_pos_z]
+      root_quat: [root_rot_x, root_rot_y, root_rot_z, root_rot_w]
+      dof_pos:
+        - dof_pos_0
+        - dof_pos_1
+        - dof_pos_2
+        - dof_pos_3
+        - dof_pos_4
+        - dof_pos_5
+        - dof_pos_6
+        - dof_pos_7
+        - dof_pos_8
+        - dof_pos_9
+        - dof_pos_10
+        - dof_pos_11
+        - dof_pos_12
+        - dof_pos_13
+        - dof_pos_14
+        - dof_pos_15
+        - dof_pos_16
+        - dof_pos_17
+        - dof_pos_18
+        - dof_pos_19
+        - dof_pos_20
+        - dof_pos_21
+    auto_build:
+      train_clip_seconds: 10.0
+      clip_stride_seconds: 10.0
+      keep_short: true
+      min_clip_seconds: 1.0
