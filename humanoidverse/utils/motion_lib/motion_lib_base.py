@@ -560,12 +560,13 @@ class MotionLibBase():
         else:
             smpl_data_list = None
         torch.set_num_threads(1)
-        manager = mp.Manager()
-        queue = manager.Queue()
         num_jobs = min(mp.cpu_count(), 8)
-        
+
         if num_jobs <= 16 or not self.multi_thread:
             num_jobs = 1
+        # mp.Manager() forks a helper process, which can die when the parent has
+        # CUDA/EGL initialized; only start it when workers are actually spawned.
+        queue = mp.Manager().Queue() if num_jobs > 1 else None
         res_acc = {}  # using dictionary ensures order of the results.
         jobs = motion_data_list
         chunk = np.ceil(len(jobs) / num_jobs).astype(int)
