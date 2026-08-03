@@ -154,12 +154,13 @@ For a single-GPU rental (e.g. one RTX 5090) instead of a multi-GPU box:
   --num-envs 512 \
   --num-env-steps 192000000 \
   --update-z-every-step 100 \
-  --buffer-size 4000000 \
+  --buffer-size 2000000 \
   --work-dir runs/ufo_fb_k1_5090_v2
 ```
 
-`--buffer-size 4000000` needs its VRAM headroom verified on a 32 GB 5090 at
-the first checkpoint — drop to `2000000` if it OOMs. Official G1 results
+`--buffer-size 4000000` was tried on a 32 GB RTX 5090 (2026-08-03) and OOMs
+at the first Warp graph launch with 512 envs — `2000000` is the proven
+setting for that card. Official G1 results
 use the full 192M steps (~4 days at ~570 FPS on one 5090); judging quality
 before ~100M steps is premature, and fall-recovery is the last skill to
 emerge.
