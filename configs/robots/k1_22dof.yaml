@@ -44,7 +44,11 @@ key_bodies:
 default_dof_pos: {}
 training:
   hydra_robot: k1/k1_22dof_auto
-  hydra_overrides: []
+  # G1 parity: 30% of training episodes start lying down so the policy learns to
+  # get up (matches configs/robots/g1_29dof.yaml).
+  hydra_overrides:
+    - env.config.lie_down_init=True
+    - env.config.lie_down_init_prob=0.3
   semantics:
     contact_bodies:
       - left_foot_link
@@ -68,7 +72,7 @@ training:
     pos:
       - 0.0
       - 0.0
-      - 0.55
+      - 0.53
     rot:
       - 0.0
       - 0.0
@@ -82,31 +86,34 @@ training:
       - 0.0
       - 0.0
       - 0.0
+    # median upright-frame pose of the retargeted LAFAN1 K1 dataset (symmetrised); root z 0.53 = foot-contact height at this pose.
     default_joint_angles:
       AAHead_yaw: 0.0
-      Head_pitch: 0.0
+      Head_pitch: 0.2
       ALeft_Shoulder_Pitch: 0.0
-      Left_Shoulder_Roll: 0.0
-      Left_Elbow_Pitch: 0.0
-      Left_Elbow_Yaw: 0.0
+      Left_Shoulder_Roll: -1.3
+      Left_Elbow_Pitch: 0.5
+      Left_Elbow_Yaw: -1.0
       ARight_Shoulder_Pitch: 0.0
-      Right_Shoulder_Roll: 0.0
-      Right_Elbow_Pitch: 0.0
-      Right_Elbow_Yaw: 0.0
-      Left_Hip_Pitch: 0.0
-      Left_Hip_Roll: 0.0
-      Left_Hip_Yaw: 0.0
-      Left_Knee_Pitch: 0.0
-      Left_Ankle_Pitch: 0.0
-      Left_Ankle_Roll: 0.0
-      Right_Hip_Pitch: 0.0
-      Right_Hip_Roll: 0.0
-      Right_Hip_Yaw: 0.0
-      Right_Knee_Pitch: 0.0
-      Right_Ankle_Pitch: 0.0
-      Right_Ankle_Roll: 0.0
+      Right_Shoulder_Roll: 1.3
+      Right_Elbow_Pitch: 0.5
+      Right_Elbow_Yaw: 1.0
+      Left_Hip_Pitch: -0.33
+      Left_Hip_Roll: 0.13
+      Left_Hip_Yaw: 0.11
+      Left_Knee_Pitch: 0.63
+      Left_Ankle_Pitch: -0.21
+      Left_Ankle_Roll: -0.08
+      Right_Hip_Pitch: -0.33
+      Right_Hip_Roll: -0.13
+      Right_Hip_Yaw: -0.11
+      Right_Knee_Pitch: 0.63
+      Right_Ankle_Pitch: -0.21
+      Right_Ankle_Roll: 0.08
   control:
-    action_scale: 0.25
+    # 0.5 (vs G1's 0.25): PD-target envelope is action_clip*action_scale*(effort_limit/kp);
+    # with K1's effort/kp this restores G1-equivalent commandable range (knee up to ~2.3 rad for get-up poses).
+    action_scale: 0.5
     action_clip_value: 5.0
     normalize_action_to: 5.0
     effort_limit_scale: 1.0
@@ -156,52 +163,54 @@ training:
       - 12.5
       - 18.1
       - 18.1
+    # kp = armature*(2*pi*f)^2, kd = 2*zeta*armature*(2*pi*f) on K1_22dof.xml armatures;
+    # legs f=4Hz zeta=1.5 (knee zeta=1.0) per BoosterRobotics/booster_train, arms/head f=10Hz zeta=2 (same rule that generates UFO's G1 gains).
     stiffness:
-      AAHead_yaw: 40.0
-      Head_pitch: 40.0
-      ALeft_Shoulder_Pitch: 20.0
-      Left_Shoulder_Roll: 20.0
-      Left_Elbow_Pitch: 20.0
-      Left_Elbow_Yaw: 20.0
-      ARight_Shoulder_Pitch: 20.0
-      Right_Shoulder_Roll: 20.0
-      Right_Elbow_Pitch: 20.0
-      Right_Elbow_Yaw: 20.0
-      Left_Hip_Pitch: 80.0
-      Left_Hip_Roll: 80.0
-      Left_Hip_Yaw: 80.0
-      Left_Knee_Pitch: 80.0
-      Left_Ankle_Pitch: 30.0
-      Left_Ankle_Roll: 30.0
-      Right_Hip_Pitch: 80.0
-      Right_Hip_Roll: 80.0
-      Right_Hip_Yaw: 80.0
-      Right_Knee_Pitch: 80.0
-      Right_Ankle_Pitch: 30.0
-      Right_Ankle_Roll: 30.0
+      AAHead_yaw: 7.9
+      Head_pitch: 7.9
+      ALeft_Shoulder_Pitch: 3.95
+      Left_Shoulder_Roll: 3.95
+      Left_Elbow_Pitch: 3.95
+      Left_Elbow_Yaw: 3.95
+      ARight_Shoulder_Pitch: 3.95
+      Right_Shoulder_Roll: 3.95
+      Right_Elbow_Pitch: 3.95
+      Right_Elbow_Yaw: 3.95
+      Left_Hip_Pitch: 30.2
+      Left_Hip_Roll: 21.4
+      Left_Hip_Yaw: 17.8
+      Left_Knee_Pitch: 60.4
+      Left_Ankle_Pitch: 35.7
+      Left_Ankle_Roll: 35.7
+      Right_Hip_Pitch: 30.2
+      Right_Hip_Roll: 21.4
+      Right_Hip_Yaw: 17.8
+      Right_Knee_Pitch: 60.4
+      Right_Ankle_Pitch: 35.7
+      Right_Ankle_Roll: 35.7
     damping:
-      AAHead_yaw: 2.0
-      Head_pitch: 2.0
-      ALeft_Shoulder_Pitch: 1.0
-      Left_Shoulder_Roll: 1.0
-      Left_Elbow_Pitch: 1.0
-      Left_Elbow_Yaw: 1.0
-      ARight_Shoulder_Pitch: 1.0
-      Right_Shoulder_Roll: 1.0
-      Right_Elbow_Pitch: 1.0
-      Right_Elbow_Yaw: 1.0
-      Left_Hip_Pitch: 3.0
-      Left_Hip_Roll: 3.0
-      Left_Hip_Yaw: 3.0
-      Left_Knee_Pitch: 3.0
-      Left_Ankle_Pitch: 1.5
-      Left_Ankle_Roll: 1.5
-      Right_Hip_Pitch: 3.0
-      Right_Hip_Roll: 3.0
-      Right_Hip_Yaw: 3.0
-      Right_Knee_Pitch: 3.0
-      Right_Ankle_Pitch: 1.5
-      Right_Ankle_Roll: 1.5
+      AAHead_yaw: 0.5
+      Head_pitch: 0.5
+      ALeft_Shoulder_Pitch: 0.25
+      Left_Shoulder_Roll: 0.25
+      Left_Elbow_Pitch: 0.25
+      Left_Elbow_Yaw: 0.25
+      ARight_Shoulder_Pitch: 0.25
+      Right_Shoulder_Roll: 0.25
+      Right_Elbow_Pitch: 0.25
+      Right_Elbow_Yaw: 0.25
+      Left_Hip_Pitch: 3.6
+      Left_Hip_Roll: 2.56
+      Left_Hip_Yaw: 2.13
+      Left_Knee_Pitch: 4.81
+      Left_Ankle_Pitch: 4.26
+      Left_Ankle_Roll: 4.26
+      Right_Hip_Pitch: 3.6
+      Right_Hip_Roll: 2.56
+      Right_Hip_Yaw: 2.13
+      Right_Knee_Pitch: 4.81
+      Right_Ankle_Pitch: 4.26
+      Right_Ankle_Roll: 4.26
   actuator:
     source: yaml
     joints:
@@ -395,8 +404,9 @@ metadata:
     - symmetric_dofs_idx is emitted as draft metadata only; current training/inference
       does not consume it.
     - No stand/default/home/init keyframe found; using model.qpos0 for default pose.
-    - PD gains generated from 'humanoid' draft template; tune stiffness/damping before
-      training.
+    - PD gains redesigned 2026-08-03 via the armature-based actuator rule (booster_train
+      constants); default pose/init height derived from motion-data statistics. Not yet
+      validated on real hardware.
     - This config is XML-derived draft output. Review semantic fields, PD gains, default
       pose, actuator parameters, contact bodies, and reward/termination-related fields
       before formal training.

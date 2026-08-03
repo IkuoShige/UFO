@@ -10,10 +10,11 @@ path](robot_config_training.md), and how to run it on a rented GPU box on
   (22 DoF), generated from `booster_assets/robots/K1/K1_22dof.xml` (+URDF)
   with `humanoidverse.tools.robot_inspect`, then manually reviewed (feet,
   hands, key_bodies, contact bodies matched against the XML body names;
-  `init_state.pos.z` corrected from the XML-derived draft value to `0.55`,
-  matching the actual root height observed in the K1 motion data — the XML's
-  own `Trunk` body placement of `z=1.0` is just a visualization default, not
-  a standing height).
+  `init_state.pos.z` corrected from the XML-derived draft value to `0.53`,
+  the computed foot-contact height at the retargeted LAFAN1 K1 dataset's
+  median upright-frame pose (0.5240 m, close to the dataset's median root
+  height of 0.5247 m) — the XML's own `Trunk` body placement of `z=1.0` is
+  just a visualization default, not a standing height).
 - `humanoidverse/config/robot/k1/k1_22dof_auto.yaml` — matching Hydra robot
   config draft, referenced by `configs/robots/k1_22dof.yaml`'s
   `training.hydra_robot: k1/k1_22dof_auto`.
@@ -37,12 +38,31 @@ path](robot_config_training.md), and how to run it on a rented GPU box on
 
 This was smoke-tested locally (`--smoke`, single GPU) end to end: robot XML
 load -> env/observation/reward manager construction -> motion library load
-(1692 training clips, 496671 frames) -> one training step. It has **not**
-been through a full training run, and the PD gains / default pose in
-`configs/robots/k1_22dof.yaml` are still XML-derived draft values — treat
-this as a working starting point, not a tuned config. See
-`metadata.warnings` in that file for exactly what was auto-generated vs.
-reviewed.
+(1692 training clips, 496671 frames) -> one training step. A first 20M-step
+training run (2026-08) used the original XML-derived draft PD gains /
+default pose and showed fall-without-recovery tracking. The PD gains in
+`configs/robots/k1_22dof.yaml` have since been redesigned via the
+armature-based actuator rule (`kp = armature*(2*pi*f)^2`, `kd =
+2*zeta*armature*(2*pi*f)`) using BoosterRobotics/booster_train's official
+K1 constants — the same rule behind UFO's own G1 gains — and the default
+pose / init root height now come from motion-data statistics instead of
+XML-derived drafts. Two further behavioral fixes shipped with the redesign:
+
+- Training now starts 30% of episodes lying down
+  (`env.config.lie_down_init=True/0.3` via `training.hydra_overrides`,
+  matching the official G1 config) so the policy practices getting up —
+  the first 20M-step run never trained get-up and could not recover from
+  falls.
+- `action_scale` raised 0.25 -> 0.5: the commandable PD-target envelope is
+  `action_clip * action_scale * (effort_limit/kp)` per joint, and with the
+  old gains the knee could only be commanded within ±0.63 rad of straight —
+  kneeling/get-up poses (knee up to 2.23 rad) were physically uncommandable.
+  0.5 restores a G1-equivalent envelope.
+
+This redesign has not yet been validated by a full
+run of its own — treat it as a working starting point, not a tuned
+config. See `metadata.warnings` in that file for exactly what remains
+auto-generated vs. reviewed.
 
 LAFAN1 itself is licensed CC BY-NC-ND 4.0 (non-commercial, no derivatives) —
 keep that in mind for anything trained on this data.
@@ -123,6 +143,27 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
   --buffer-size 5120000
 ```
 
+For a single-GPU rental (e.g. one RTX 5090) instead of a multi-GPU box:
+
+```bash
+./run_train.sh \
+  --agent fb \
+  --robot-config configs/robots/k1_22dof.yaml \
+  --data-manifest configs/data/k1_lafan1.yaml \
+  --gpu-ids single \
+  --num-envs 512 \
+  --num-env-steps 192000000 \
+  --update-z-every-step 100 \
+  --buffer-size 4000000 \
+  --work-dir runs/ufo_fb_k1_5090_v2
+```
+
+`--buffer-size 4000000` needs its VRAM headroom verified on a 32 GB 5090 at
+the first checkpoint — drop to `2000000` if it OOMs. Official G1 results
+use the full 192M steps (~4 days at ~570 FPS on one 5090); judging quality
+before ~100M steps is premature, and fall-recovery is the last skill to
+emerge.
+
 Swap `--agent fb` for `--agent tech` for TeCH training, same as the G1 path
 in the main README.
 
@@ -131,13 +172,25 @@ in the main README.
 Per `docs/robot_config_training.md`, this is still an experimental path for
 new robots. Before trusting a K1 policy:
 
-- Watch reward curves for the first hour of training — PD gains/action
-  scale are XML-derived drafts and may need retuning if the robot never
+- Watch reward curves for the first hour of training — PD gains now follow
+  the armature-based actuator rule (booster_train constants) and the
+  default pose / init height come from motion-data statistics, but this
+  redesign is not yet validated by a full run; retune if the robot never
   stabilizes standing.
 - Non-G1 reward inference currently only covers root/locomotion tasks; goal
   inference needs a K1-specific goal JSON if you go beyond that.
 - The `deploy` branch / ONNX export path is G1-oriented; K1 real-robot
   deployment is out of scope for what's set up here.
+- Known physical limit: the hip-pitch velocity limit (7.1 rad/s) makes
+  sprint/run clips untrackable at full speed — p99 hip-pitch velocity in
+  the retargeted dataset sits at that limit, so tracking error on fast
+  clips is an expected data/hardware ceiling, not necessarily a training
+  bug.
+- Known physical limit: the retargeted LAFAN1->K1 data has up to ~4-11 cm
+  foot-ground penetration on some clips, which sets a tracking-error floor
+  for those clips regardless of policy quality.
+- Known physical limit: K1 has 22 DoF vs. G1's 29 (no waist, no wrists),
+  so some whole-body motions cannot reach G1's visual parity.
 
 ## 5. Getting checkpoints and logs back off the box
 
