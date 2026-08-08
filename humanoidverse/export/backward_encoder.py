@@ -209,14 +209,19 @@ def _verify_backward_encoder_onnx(
         )
 
     ort_session = ort.InferenceSession(str(output_path), providers=["CPUExecutionProvider"])
-    ort_z = ort_session.run(
-        ["z"],
-        {
-            "state": example_state.numpy().astype(np.float32),
-            "last_action": example_last_action.numpy().astype(np.float32),
-            "privileged_state": example_privileged_state.numpy().astype(np.float32),
-        },
-    )[0]
+    # torch.onnx.export prunes graph inputs that the traced module never reads. The
+    # backward map's input_filter may ignore ``last_action`` (FBcprAux uses
+    # key=["state", "privileged_state"]), so only feed the inputs the graph declares.
+    available = {
+        "state": example_state.numpy().astype(np.float32),
+        "last_action": example_last_action.numpy().astype(np.float32),
+        "privileged_state": example_privileged_state.numpy().astype(np.float32),
+    }
+    graph_input_names = [i.name for i in ort_session.get_inputs()]
+    unexpected = [name for name in graph_input_names if name not in available]
+    if unexpected:
+        raise RuntimeError(f"Backward encoder ONNX has unexpected graph inputs: {unexpected}")
+    ort_z = ort_session.run(["z"], {name: available[name] for name in graph_input_names})[0]
 
     max_abs = float(np.max(np.abs(torch_z - ort_z)))
     if not np.allclose(torch_z, ort_z, atol=float(atol), rtol=float(rtol)):
