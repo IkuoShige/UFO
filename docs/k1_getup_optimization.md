@@ -16,7 +16,7 @@ further is now measured.**
 
 * **Robustness under domain randomization was never the problem.** Once WS-A's "both feet planted
   continuously" term is removed, *every* finalist scores **1.000** upright-stance success under the
-  full training DR, in 31 of 32 candidate×bank cells, and never ends up on the floor. WS-A's 27% was
+  full training DR, in 30 of 32 candidate×bank cells, and never ends up on the floor. WS-A's 27% was
   a metric artifact. There is nothing to optimize at the randomization the policy was trained under
   (§2, §5.2).
 * **Speed did not move** — every clean latent in the study stands in 0.78–1.04 s, and the optimized
@@ -373,7 +373,7 @@ fixed one; `rose` is "got up at all"; `fell` is "ended below the height/tilt thr
 | `wsf_obstacles4_subject2_135` | 0.521 / **1.000** | 0.604 / **1.000** | 0.583 / **1.000** | 0.458 / **1.000** | 1.00 | 0.00 |
 | `wsf_fallAndGetUp1_subject4_8325` | 0.458 / **0.979** | 0.562 / **1.000** | 0.479 / **1.000** | 0.333 / **1.000** | 1.00 | 0.00–0.02 |
 
-**31 of the 32 candidate×bank cells are exactly 1.000 on the fixed metric, and `rose` is 1.000 in
+**30 of the 32 candidate×bank cells are exactly 1.000 on the fixed metric, and `rose` is 1.000 in
 all 32.** The old criterion meanwhile scatters between 0.229 and 0.604 — the same 25–60% band WS-A
 reported — and its ordering is essentially noise: `standing_pooled` scores 0.375, 0.396, 0.333, 0.271
 on four banks that are all the same difficulty. That spread *is* the measurement error of a
@@ -470,7 +470,7 @@ latent to exploit:
   target stance, and the policy takes about as long to get there whatever the stance is.
 * **Robustness at the training DR level could not improve, because it is already perfect.** Once the
   "both feet planted continuously" term is removed, every finalist scores 1.000 upright-stance
-  success in 31 of 32 candidate×bank cells, never falls back, and always rises. There is nothing
+  success in 30 of 32 candidate×bank cells, never falls back, and always rises. There is nothing
   to optimize. WS-A's 27% was a metric artifact, not a deficiency.
 * **Self-collision did not improve and did not need to.** The champion is at 0.012 nominal, the
   optimized latents at 0.008–0.014. Under DR the optimized latents are marginally cleaner
