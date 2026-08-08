@@ -9,6 +9,36 @@ WS-A picked `standing_pooled` out of 27 hand-derived candidates; it saturates no
 (100% in-distribution and OOD). This workstream asks whether searching the latent sphere directly
 beats it on the axes that are *not* saturated.
 
+## Headline
+
+**Three of the four axes had no headroom; the fourth moved by a third and the reason it cannot move
+further is now measured.**
+
+* **Robustness under domain randomization was never the problem.** Once WS-A's "both feet planted
+  continuously" term is removed, *every* finalist scores **1.000** upright-stance success under the
+  full training DR, in 31 of 32 candidate×bank cells, and never ends up on the floor. WS-A's 27% was
+  a metric artifact. There is nothing to optimize at the randomization the policy was trained under
+  (§2, §5.2).
+* **Speed did not move** — every clean latent in the study stands in 0.78–1.04 s, and the optimized
+  one is within 0.01 s of the champion. Time-to-stand looks like a property of the actor, not the
+  latent (§7).
+* **The walk hand-off gap is closable in z-space, and partly closable for free.** The optimized
+  latent `cem_s4_5` cuts terminal-pose RMS distance from **0.242 → 0.161 rad** (knee +0.309 →
+  +0.491 against a +0.792 target), closer on all six leg joints, at unchanged success, speed and
+  self-collision — a paired improvement of ≈170 standard errors, identical on held-out initial
+  conditions, and reproduced through the exported ONNX deploy path in a second simulator (§5, §6).
+* **Closing the gap *fully* costs exactly what WS-A's disqualified goal latents cost.** A latent
+  pooled from the dataset frames nearest the hand-off pose gets to **0.070 rad** (knee +0.653) and
+  stands in 0.84 s — but holds its hands against its hips on 82–93% of frames and is the one
+  candidate measurably less robust to pushes (−0.120 ± 0.040). The self-collision cliff sits at
+  t ≈ 0.35–0.50 along the arc between the two (§4.1).
+
+**Recommendation: promote `cem_s4_5` (z-bank key `getup_opt_ws_e`), keep `standing_pooled` as
+fallback.** The pre-registered decision rule as literally written says otherwise; §8 explains why
+that rule cannot be trusted here (its 0.05 tolerance is finer than the 0.07 standard error of the
+quantity it gates on, and it disqualified all seven challengers including two that are *better* than
+the champion when the episodes are pooled) and states the case on the evidence instead.
+
 ## 1. What is being optimized (and what is not)
 
 Nominal success is not optimized — it is a **gate**, not an objective. The composite is
