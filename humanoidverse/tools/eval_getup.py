@@ -492,15 +492,27 @@ def rollout(
     cfg: RolloutConfig,
     rng: np.random.Generator,
     device: str,
+    latency_tile: int | None = None,
 ) -> Trajectory:
+    """``latency_tile``: draw this many per-env latency values and tile them over the envs.
+
+    Only used by the population/paired evaluation in ``opt_getup_z.py``, where env block
+    ``g`` holds candidate ``g`` under the same initial conditions: tiling makes the latency
+    draw identical across blocks so candidates differ only in their latent.
+    """
     num_envs = core.num_envs
     target_states, meta = pose_bank.sample(num_envs, rng)
     observation, _ = wrapped_env.reset(to_numpy=False, target_states=target_states)
 
-    action_delays = torch.as_tensor(
-        rng.integers(0, cfg.action_latency_max + 1, size=num_envs), device=device, dtype=torch.long
-    )
-    obs_delays = torch.as_tensor(rng.integers(0, cfg.obs_latency_max + 1, size=num_envs), device=device, dtype=torch.long)
+    def _delays(max_delay: int) -> torch.Tensor:
+        n = int(latency_tile) if latency_tile else num_envs
+        draw = rng.integers(0, max_delay + 1, size=n)
+        if n != num_envs:
+            draw = np.tile(draw, int(math.ceil(num_envs / n)))[:num_envs]
+        return torch.as_tensor(draw, device=device, dtype=torch.long)
+
+    action_delays = _delays(cfg.action_latency_max)
+    obs_delays = _delays(cfg.obs_latency_max)
     action_buffer = LatencyBuffer(action_delays)
     obs_buffer = DictLatencyBuffer(obs_delays)
 
