@@ -841,7 +841,9 @@ def cmd_final(args) -> None:
             continue
         x = torch.tensor(h["x"], device=device, dtype=torch.float32).unsqueeze(0)
         z = _to_z(model, basis, x)[0]
-        if any(float(torch.dot(z, o) / (z.norm() * o.norm())) > 0.999 for o in finalists.values()):
+        # Skip near-duplicates: once CEM converges its samples are almost collinear, and three
+        # copies of the same latent would waste final-fidelity rollout slots.
+        if any(float(torch.dot(z, o) / (z.norm() * o.norm())) > 0.99 for o in finalists.values()):
             continue
         finalists[f"cem_{h['label']}"] = z
         taken += 1
