@@ -888,8 +888,9 @@ def cmd_final(args) -> None:
             _print_table(f"{key} ({time.time()-t0:.0f}s)", names, res,
                          ["success", "success_upright", "rose", "tts", "handoff_rms",
                           "handoff_knee", "self_collision", "min_final_root_height"])
-            results["n_rollouts"] = ctx.n_rollouts
+            results["n_rollouts"] = results.get("n_rollouts_prev_tiers", 0) + ctx.n_rollouts
             res_path.write_text(json.dumps(results, indent=2, default=str) + "\n")
+        results["n_rollouts_prev_tiers"] = results["n_rollouts"]
         ctx.wrapped_env.close()
 
     torch.save({n: finalists[n].cpu() for n in names}, out_dir / "finalist_z.pt")

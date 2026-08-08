@@ -25,8 +25,8 @@ further is now measured.**
 * **The walk hand-off gap is closable in z-space, and partly closable for free.** The optimized
   latent `cem_s4_5` cuts terminal-pose RMS distance from **0.242 → 0.161 rad** (knee +0.309 →
   +0.491 against a +0.792 target), closer on all six leg joints, at unchanged success, speed and
-  self-collision — a paired improvement of ≈170 standard errors, identical on held-out initial
-  conditions, and reproduced through the exported ONNX deploy path in a second simulator (§5, §6).
+  self-collision — a paired improvement of over 100 standard errors on both held-out banks
+  (−108 SE OOD, −173 SE in-distribution), and reproduced through the exported ONNX deploy path in a second simulator (§5, §6).
 * **Closing the gap *fully* costs exactly what WS-A's disqualified goal latents cost.** A latent
   pooled from the dataset frames nearest the hand-off pose gets to **0.070 rad** (knee +0.653) and
   stands in 0.84 s — but holds its hands against its hips on 82–93% of frames and is the one
@@ -555,7 +555,7 @@ of the evidence for `cem_s4_5` versus `standing_pooled`, on held-out initial con
 |---|---|---|---|
 | nominal success | 1.000 | 1.000 | 0 |
 | training-DR upright stance | 1.000 | 1.000 | 0 |
-| **hand-off RMS** | 0.242 | **0.161** | **−0.081 ± 0.0005 (≈170 SE)** |
+| **hand-off RMS** | 0.242 | **0.161** | **−0.081 ± 0.0005 (−173 SE in-dist, −108 SE OOD)** |
 | knee angle | +0.309 | **+0.491** | +0.182 |
 | time-to-stand | 0.86 / 0.89 s | 0.86 / 0.90 s | +0.001 ± 0.014 s |
 | self-collision (nominal) | 0.014 / 0.006 | 0.011 / 0.007 | ≈0 |
@@ -570,8 +570,8 @@ of the evidence for `cem_s4_5` versus `standing_pooled`, on held-out initial con
 `standing_pooled` as the fallback.** The case:
 
 * The only axis with real headroom improves decisively and reproducibly: hand-off RMS 0.242 → 0.161
-  rad, closer on all six leg joints, ≈170 paired standard errors, identical on both held-out banks
-  and on both search banks, and reproduced to within 0.01 rad through the ONNX deploy path in a
+  rad, closer on all six leg joints, over 100 paired standard errors on each held-out bank
+  (−173 in-distribution, −108 OOD), identical on both held-out banks and on both search banks, and reproduced to within 0.01 rad through the ONNX deploy path in a
   different simulator.
 * Nothing measurably regresses. Nominal success, training-DR upright stance, self-collision and
   time-to-stand are unchanged; sim2sim is 0.02 s *faster* face-up.
@@ -629,6 +629,7 @@ in ~2 s over all 77 clips and is cached in `runs/getup_opt/z_sources.pt`.
 | `runs/getup_opt/final_results.json` | all 12 conditions × 8 finalists, aggregates **and** per-episode arrays for paired statistics |
 | `runs/getup_opt/finalist_z.pt`, `z_bank_finalists.npz` | the finalist latents (`.npz` is loadable by `tools/k1_ufo_sim2sim.py --z-bank`) |
 | `runs/getup_opt/decision.json` | the pre-registered rule, every candidate's numbers, the verdicts, paired statistics |
+| `docs/k1_getup_opt_z.json` | **committed** raw 256-float vectors: the winner `cem_s4_5`, `standing_pooled`, `handoff_pool_500` (`runs/` is gitignored and the winner is not reproducible from scratch, §3.2) |
 | `runs/getup_eval/z_bank.pt` | **`getup` untouched**; new key `getup_opt_ws_e` = `cem_s4_5` with `z` / `mode` / `source` / `score` / `holdout_score` / `paired_vs_champion` / `search_config` / `z_dim` |
 
 ### 9.3 Reproducing
@@ -674,4 +675,7 @@ warns and continues rather than aborting.
   the principal directions of the standing manifold. A latent outside that span could in principle
   do better; nothing here rules that out.
 * **48 episodes per candidate per condition** gives ≈0.07 standard error on a binary rate. That is
-  ample for the hand-off axis (≈170 SE) and marginal for the stress-robustness axis (§8.2).
+  ample for the hand-off axis (>100 SE) and marginal for the stress-robustness axis (§8.2).
+* **`runs/` is gitignored**, so the winning 256-float vector (plus `standing_pooled` and
+  `handoff_pool_500` for reference) is committed as `docs/k1_getup_opt_z.json`. It cannot be
+  regenerated from scratch today — see §3.2.
