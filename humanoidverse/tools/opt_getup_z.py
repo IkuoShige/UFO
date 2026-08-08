@@ -159,6 +159,10 @@ def aggregate_group(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "success": float(np.mean([r["success"] for r in rows])),
         "success_upright": float(np.mean([r["success_upright"] for r in rows])),
         "rose": float(np.mean([r["rose"] for r in rows])),
+        # Continuous version of success_upright: the fraction of the trailing hold window that
+        # is upright, before it is thresholded at 0.95. Same criterion, far lower variance --
+        # used as the search surrogate; selection and reporting use the thresholded rate.
+        "held_upright": float(np.mean([r["held_upright_frac"] for r in rows])),
         "fell_back": float(np.mean([r["fell_back"] for r in rows])),
         "refell": float(np.mean([r["refell"] for r in rows])),
         "tts": _nanmean([r["time_to_stand_s"] for r in ok]),
@@ -270,11 +274,17 @@ class ObjectiveWeights:
     dq_penalty: float = 1000.0
 
 
-def composite(nom: dict[str, Any], dr: dict[str, Any] | None, w: ObjectiveWeights) -> float:
-    """Documented, arbitrary composite over the *unsaturated* axes. Higher is better."""
+def composite(nom: dict[str, Any], dr: dict[str, Any] | None, w: ObjectiveWeights,
+              *, dr_key: str = "success_upright") -> float:
+    """Documented, arbitrary composite over the *unsaturated* axes. Higher is better.
+
+    ``dr_key`` selects the robustness term: ``success_upright`` (the reported, thresholded
+    metric) or ``held_upright`` (its continuous pre-threshold form, used inside the search
+    because a 12-episode binary rate carries ~10 points of noise on a 100-point term).
+    """
     j = w.w_nominal_success * float(nom["success"])
     if dr is not None:
-        j += w.w_dr_upright * float(dr["success_upright"])
+        j += w.w_dr_upright * float(dr[dr_key])
     tts = nom["tts"]
     if not (isinstance(tts, float) and math.isnan(tts)):
         j += w.w_speed * max(0.0, 1.0 - tts / w.speed_ref_s)
@@ -717,7 +727,7 @@ def cmd_search(args) -> None:
                                   self_collision=True, collision_stride=10)
         dr = evaluate_population(ctx_dr, z_pop, pose_cfg=pose_cfg, roll_cfg=roll_dr,
                                  seed_key=[scfg.seed, it + 1, 1], batches=1, self_collision=False)
-        J = np.array([composite(n, d, weights) for n, d in zip(nom, dr)])
+        J = np.array([composite(n, d, weights, dr_key="held_upright") for n, d in zip(nom, dr)])
         j_champ = float(J[labels.index(champ)]) if champ in labels else float("nan")
         order = np.argsort(-J)
         elites = order[: scfg.elite]
@@ -751,7 +761,8 @@ def cmd_search(args) -> None:
         })
         print(f"[IT {it:2d}] bucket={bucket} J_champ={j_champ:7.2f} J_best={J[best]:7.2f} "
               f"({labels[best]}, dJ={J[best]-j_champ:+.2f}) tts={nom[best]['tts']:.2f} "
-              f"hrms={nom[best]['handoff_rms']:.3f} upr={dr[best]['success_upright']:.2f} "
+              f"hrms={nom[best]['handoff_rms']:.3f} upr={dr[best]['held_upright']:.3f}/"
+              f"{dr[best]['success_upright']:.2f} "
               f"sc={nom[best]['self_collision']:.3f} sigma={sigma.mean():.3f} "
               f"[{time.time()-t_start:.0f}s]", flush=True)
         payload = {
