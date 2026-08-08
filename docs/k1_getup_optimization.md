@@ -212,14 +212,17 @@ handoff_pool_500` (in-distribution bank, 12 episodes each, 6 s episodes). `t` is
 | point | hand-off RMS | knee Δ | self-collision | time-to-stand | nominal success | stress upright |
 |---|---|---|---|---|---|---|
 | `standing_pooled` (t=0) | 0.242 | −0.476 | 0.025 | 0.83 s | 1.00 | 0.83 |
-| t = 0.20 | 0.199 | −0.413 | **0.017** | 0.86 s | 1.00 | 0.67 |
-| t = 0.35 | 0.172 | −0.372 | **0.019** | 0.84 s | 1.00 | 0.50 |
-| t = 0.35 (from `standing_mean_all`) | 0.153 | −0.332 | 0.336 | 0.95 s | 1.00 | 0.67 |
-| t = 0.50 | 0.149 | −0.332 | 0.794 | 0.86 s | 1.00 | 0.83 |
-| t = 0.65 | 0.141 | −0.316 | 0.839 | 0.82 s | 1.00 | 0.67 |
-| t = 0.80 | 0.107 | −0.241 | 0.897 | 0.80 s | 1.00 | 0.58 |
-| t = 1.00 (`handoff_pool_500`) | **0.070** | **−0.136** | 0.892 | 0.80 s | 1.00 | 0.58 |
+| champion arc, t = 0.20 | 0.199 | −0.414 | **0.022** | 0.84 s | 1.00 | 0.67 |
+| champion arc, t = 0.35 | 0.172 | −0.373 | **0.025** | 0.86 s | 1.00 | 0.67 |
+| champion arc, t = 0.50 | 0.150 | −0.334 | 0.806 | 0.83 s | 1.00 | 0.75 |
+| champion arc, t = 0.65 | 0.139 | −0.313 | 0.842 | 0.84 s | 1.00 | 0.58 |
+| champion arc, t = 0.80 | 0.110 | −0.251 | 0.892 | 0.81 s | 1.00 | 0.58 |
+| champion arc, t = 1.00 (`handoff_pool_500`) | **0.070** | **−0.138** | 0.894 | 0.78 s | 1.00 | 0.50 |
+| `standing_mean_all` arc, t = 0.35 | 0.154 | −0.333 | 0.217 | 0.96 s | 1.00 | 0.67 |
+| `standing_mean_all` arc, t = 0.50 | 0.128 | −0.286 | 0.858 | 0.92 s | 1.00 | 0.67 |
+| `standing_mean_all` arc, t = 0.65 | 0.108 | −0.247 | 0.881 | 0.88 s | 1.00 | 0.67 |
 | `handoff_pool_100` | 0.067 | −0.133 | 0.881 | 0.80 s | 1.00 | 0.58 |
+| `handoff_pool_2000` | 0.080 | −0.169 | 0.906 | 0.83 s | 1.00 | 0.58 |
 
 This single sweep contains the workstream's central result. **The hand-off gap is closable in
 z-space** — `handoff_pool_500` lands at 0.070 rad RMS with the knee 0.14 rad (not 0.48 rad) short of
@@ -228,7 +231,11 @@ not free**: past `t ≈ 0.35` the self-collision fraction jumps from 0.02 to 0.7
 offending pairs are exactly the ones WS-A found on the goal latents —
 `Right_Hip_Roll ↔ right_hand_link` (4988 frame-hits), `Left_Hip_Yaw ↔ left_hand_link` (4614),
 `Left_Hip_Roll ↔ left_hand_link` (3730), `Right_Hip_Yaw ↔ right_hand_link` (3094). The deeper the
-commanded crouch, the more the arms end up resting on the hips.
+commanded crouch, the more the arms end up resting on the hips. The transition is a cliff, not a
+ramp: on the champion arc self-collision is 0.022–0.025 up to t = 0.35 and 0.806 by t = 0.50.
+(The tool originally truncated the arc endpoint names when labelling these points, which made the
+two arcs indistinguishable; the rows above were recovered by matching each recorded coordinate
+vector back to its exact slerp point, and the labelling is fixed.)
 
 The useful region is therefore the *near* half of the arc, and that is where CEM was started.
 

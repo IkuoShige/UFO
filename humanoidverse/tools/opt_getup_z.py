@@ -446,7 +446,9 @@ def warm_start_population(seed_coords: dict[str, torch.Tensor], population: int
         if a not in seed_coords or b not in seed_coords:
             continue
         for t in ts:
-            members.append((f"arc_{a[:6]}_{b[-3:]}_t{t:.2f}", slerp_x(seed_coords[a], seed_coords[b], t)))
+            # Full endpoint names: truncating them collided ("standing_pooled" and
+            # "standing_mean_all" both truncate to "standi"), making two arcs indistinguishable.
+            members.append((f"arc_{a}->{b}_t{t:.2f}", slerp_x(seed_coords[a], seed_coords[b], t)))
     for extra in ("handoff_pool_100", "handoff_pool_2000"):
         if extra in seed_coords:
             members.append((extra, seed_coords[extra]))
