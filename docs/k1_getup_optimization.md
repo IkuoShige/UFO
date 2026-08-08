@@ -445,13 +445,14 @@ latent to exploit:
 * **Self-collision did not improve and did not need to.** The champion is at 0.012 nominal, the
   optimized latents at 0.008–0.014. Under DR the optimized latents are marginally cleaner
   (0.060–0.102 vs 0.075–0.107) but that gap is not the point of interest.
-* **The hand-off gap is only partly closed.** The optimized latent takes the knee from 0.315 rad to
-  0.467 rad against a 0.792 rad target — from 0.48 rad short to 0.33 rad short, about a third of the
-  gap. The latent that closes it properly (`handoff_pool_500`, knee 0.645 rad, RMS 0.071) exists and
-  works, but it holds its hands against its hips on 82–93% of frames, which is a wear and
-  force-estimation problem on hardware and is exactly the failure mode WS-A disqualified the goal
-  latents for. Within the constraint "self-collision no worse than the champion", 0.154–0.164 rad is
-  where the z-sphere runs out.
+* **The hand-off gap is only partly closed.** The optimized latent takes the knee from 0.309 rad to
+  0.491 rad against a 0.792 rad target — from 0.48 rad short to 0.30 rad short, about a third of the
+  gap. The latent that closes it properly (`handoff_pool_500`, knee 0.653 rad, RMS 0.070) exists and
+  works, but it holds its hands against its hips on 82–93% of frames — a wear and force-estimation
+  problem on hardware, exactly the failure mode WS-A disqualified the goal latents for — *and* it is
+  the one candidate measurably less robust to pushes (§5.3, −0.120 ± 0.040). Within the constraint
+  "no worse than the champion on self-collision or push robustness", 0.154–0.164 rad is where the
+  z-sphere runs out.
 * **WS-F's arm-clearance latents did not turn out to be contenders on these axes.** They are
   genuinely fixed on self-collision (0.011–0.018 under DR, the cleanest of all finalists, against
   0.926–0.929 for their unfiltered predecessors) and they are nominally the most robust under the
@@ -459,3 +460,108 @@ latent to exploit:
   0.242) and 0.06–0.14 s slower. If the deployment priority were "cleanest possible contact under
   DR", they would be the pick; on hand-off distance and speed they are behind both the champion and
   the optimized latent.
+
+### 7.1 Terminal leg pose, side by side
+
+Mean over the final 2 s of standing episodes on the two **held-out** banks (left leg; right is the
+mirror). This is the whole of the improvement, in the units the walk hand-off actually cares about.
+
+| joint | walk-policy target | `standing_pooled` | **`cem_s4_5`** | `handoff_pool_500` (disqualified) |
+|---|---|---|---|---|
+| Hip pitch | −0.452 | −0.182 | **−0.308** | −0.471 |
+| Hip roll | +0.044 | +0.152 | **+0.094** | +0.037 |
+| Hip yaw | +0.108 | +0.146 | **+0.112** | +0.179 |
+| Knee pitch | +0.792 | +0.309 | **+0.491** | +0.653 |
+| Ankle pitch | −0.313 | −0.141 | **−0.263** | −0.328 |
+| Ankle roll | −0.011 | −0.120 | **−0.054** | +0.026 |
+| **RMS Δ** | — | 0.242 | **0.161** | 0.070 |
+| **max abs Δ** | — | 0.483 | **0.370** | 0.151 |
+| **knee Δ** | — | −0.477 | **−0.335** | −0.144 |
+
+`cem_s4_5` is closer to the target on *every one of the six joints*, not just the knee.
+
+## 8. Decision
+
+### 8.1 The pre-registered rule, and what it returned
+
+The rule (§`DECISION_RULE` in `opt_getup_z.py`, written before the final numbers were read)
+disqualifies a candidate that, on **either** held-out bank, falls more than 0.02 below the champion
+on nominal success or training-DR upright-stance, or more than **0.05** below on stress-DR
+upright-stance, or self-collides above 0.50; survivors are then ranked by held-out J.
+
+It disqualified **all seven** challengers, and every one of them on the same clause: the stress-DR
+tolerance. The winner it returns is therefore `standing_pooled`.
+
+| candidate | held-out J | search J | rule verdict |
+|---|---|---|---|
+| `cem_s4_5` | **210.26** | 211.63 | DQ — stress in-dist hold-out 0.708 vs champion 0.771 |
+| `cem_s7_1` | 210.21 | 210.61 | DQ — stress OOD hold-out 0.646 vs champion 0.792 |
+| `cem_mean` | 209.96 | 201.12 | DQ — stress OOD hold-out 0.688 vs champion 0.792 |
+| `cem_s7_2` | 207.08 | 206.43 | DQ — stress OOD hold-out 0.604 vs champion 0.792 |
+| `standing_pooled` | 203.89 | 198.03 | eligible |
+| `wsf_obstacles4_subject2_135` | 188.01 | 193.49 | DQ — stress OOD hold-out 0.708 vs champion 0.792 |
+| `wsf_fallAndGetUp1_subject4_8325` | 180.61 | 186.35 | DQ — stress OOD hold-out 0.667 vs champion 0.792 |
+| `handoff_pool_500` | −966.03 | −957.83 | DQ — self-collision 0.932; stress; DR OOD hold-out 0.958 |
+
+### 8.2 Why that verdict should not be taken at face value — and what is left after saying so
+
+**The rule is mis-calibrated, and this is a flaw in the rule, not a finding about the latents.** Its
+0.05 tolerance is *below the standard error of the quantity it gates on*: stress upright-stance at
+48 episodes has SE ≈ 0.07, and the champion's own score varies 0.688–0.792 across four banks of
+identical difficulty. A one-sided per-bank threshold finer than the measurement will disqualify
+almost anything, which is exactly what happened — including the two WS-F latents that are *better*
+than the champion when the stress episodes are pooled.
+
+Pooling all 192 paired stress episodes (§5.3) gives the properly powered comparison:
+`cem_s4_5` is **−0.016 ± 0.040** against the champion on the binary metric and **+0.002** on the
+continuous one. That is indistinguishable from no change. The one candidate that pooling *does*
+convict is `handoff_pool_500` at −0.120 ± 0.040, and it stays disqualified.
+
+This pooled analysis is a **post-hoc amendment** and is labelled as one. It does not rescue a
+candidate that lost; it says the rule could not tell the candidates apart in the first place. State
+of the evidence for `cem_s4_5` versus `standing_pooled`, on held-out initial conditions only:
+
+| axis | `standing_pooled` | `cem_s4_5` | paired difference |
+|---|---|---|---|
+| nominal success | 1.000 | 1.000 | 0 |
+| training-DR upright stance | 1.000 | 1.000 | 0 |
+| **hand-off RMS** | 0.242 | **0.161** | **−0.081 ± 0.0005 (≈170 SE)** |
+| knee angle | +0.309 | **+0.491** | +0.182 |
+| time-to-stand | 0.86 / 0.89 s | 0.86 / 0.90 s | +0.001 ± 0.014 s |
+| self-collision (nominal) | 0.014 / 0.006 | 0.011 / 0.007 | ≈0 |
+| self-collision (training DR) | 0.075 / 0.105 | 0.063 / 0.102 | ≈0 |
+| stress upright stance (pooled, 192 ep) | 0.750 | 0.734 | −0.016 ± 0.040 |
+| sim2sim time-to-stand (up / down) | 0.64 / 0.72 s | **0.62 / 0.72 s** | — |
+| sim2sim hand-off RMS (up / down) | 0.247 / 0.235 | **0.162 / 0.160** | — |
+
+### 8.3 Recommendation
+
+**Promote `cem_s4_5` (stored as `getup_opt_ws_e`) to the deployed get-up latent, and keep
+`standing_pooled` as the fallback.** The case:
+
+* The only axis with real headroom improves decisively and reproducibly: hand-off RMS 0.242 → 0.161
+  rad, closer on all six leg joints, ≈170 paired standard errors, identical on both held-out banks
+  and on both search banks, and reproduced to within 0.01 rad through the ONNX deploy path in a
+  different simulator.
+* Nothing measurably regresses. Nominal success, training-DR upright stance, self-collision and
+  time-to-stand are unchanged; sim2sim is 0.02 s *faster* face-up.
+* The brief's two conditions for replacement — "real on held-out conditions" and "confirmed in
+  `k1_ufo_sim2sim.py`" — are both met.
+
+**Read this alongside the honest caveats.** The pre-registered rule as literally written says no
+(§8.1); it says no to every candidate including two that are nominally *more* robust than the
+champion, which is why it should not decide this. If a reviewer prefers the literal rule, the
+champion stands and all that is forgone is the hand-off improvement — nothing breaks either way,
+because the `getup` key in `runs/getup_eval/z_bank.pt` is untouched and promotion is a one-line
+change in whatever selects the deploy key.
+
+**Do not ship `handoff_pool_500`,** even though it is the only latent that nearly closes the
+hand-off gap (RMS 0.070, knee +0.653). It self-collides hand-on-hip on 82–93% of frames and it is
+the one candidate measurably worse under pushes (−0.120 ± 0.040). It is recorded here as the
+existence proof, not as a deployable option.
+
+**For whoever owns the walk hand-off:** the gap is now 0.30 rad of knee rather than 0.48 rad, and
+the residual is structural. WS-A's conclusion that "closing it is a hand-off problem, not a
+z-selection problem" is half right — a third of it *was* a z-selection problem, and the rest is not
+free. Closing the remainder means either a blend window, a walk policy tolerant of a taller stance,
+or accepting the arm-clearance cost of a deeper commanded crouch.
