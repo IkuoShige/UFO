@@ -364,3 +364,98 @@ contact): the champion goes 0.012 → 0.075–0.107 and the CEM latents 0.010 �
 optimized latents are, if anything, marginally *cleaner* than the champion under DR. WS-F's
 clearance-filtered latents are the cleanest of all (0.011–0.018), and `handoff_pool_500` stays at
 0.817–0.860 — its hand-on-hip contact is not a nominal-only artifact.
+
+### 5.3 Stress tier (3× training push) — the only condition with any headroom
+
+Training DR with the push magnitude tripled to ±1.5 m/s / ±1.5 rad/s every 1–3 s, over 10 s
+episodes, plus observation noise and latency. This is **out of the training distribution by
+construction**; it exists to create a robustness signal where the training tier has none. Here the
+robot really can end up on the floor: `fell_back` runs 0.04–0.21.
+
+Upright-stance success per bank, and the paired difference against `standing_pooled` pooled over all
+four banks (192 paired episodes, same initial conditions, same batch):
+
+| candidate | in-dist (search) | OOD (search) | in-dist (HELD OUT) | OOD (HELD OUT) | mean | **pooled paired Δ** |
+|---|---|---|---|---|---|---|
+| `standing_pooled` | 0.750 | 0.688 | 0.771 | 0.792 | 0.750 | — |
+| `wsf_obstacles4_subject2_135` | 0.833 | 0.750 | 0.771 | 0.708 | 0.766 | **+0.016 ± 0.039** |
+| `wsf_fallAndGetUp1_subject4_8325` | 0.771 | 0.771 | 0.771 | 0.667 | 0.745 | **−0.005 ± 0.039** |
+| **`cem_s4_5`** | 0.729 | 0.750 | 0.708 | 0.750 | 0.734 | **−0.016 ± 0.040** |
+| `cem_s7_1` | 0.750 | 0.708 | 0.812 | 0.646 | 0.729 | **−0.021 ± 0.037** |
+| `cem_s7_2` | 0.646 | 0.708 | 0.771 | 0.604 | 0.682 | −0.068 ± 0.039 |
+| `cem_mean` | 0.667 | 0.604 | 0.771 | 0.688 | 0.682 | −0.068 ± 0.038 |
+| `handoff_pool_500` | 0.625 | 0.708 | 0.688 | 0.500 | 0.630 | **−0.120 ± 0.040** |
+
+Two things to read here.
+
+**First, the noise floor.** `standing_pooled` itself scores 0.688–0.792 across four banks that are
+all nominally the same difficulty. A ±0.05 spread is what this metric does at 48 episodes; its
+standard error is ≈0.07. Any per-bank comparison finer than that is reading noise.
+
+**Second, one difference *is* real: the deep crouch costs push robustness.** `handoff_pool_500`
+is 0.120 ± 0.040 below the champion pooled (−3.0 SE), and it is the worst candidate on all four
+banks. A crouched stance has less margin to the 0.45 m height threshold (its minimum final root
+height is 0.483 m, the lowest of the clean candidates) and less room to absorb a shove. So the far
+end of the arc is penalized *twice* — by self-collision **and** by push robustness. The near end is
+not: `cem_s4_5` and `cem_s7_1` sit within half a standard error of the champion, and on the
+continuous held-upright fraction `cem_s4_5` is at +0.002 (0.897 vs 0.895).
+
+## 6. Independent confirmation: plain MuJoCo + the exported ONNX policy
+
+`eval_getup.py` and `opt_getup_z.py` share an environment, a robot config and a rollout loop, so a
+win inside them is not independent evidence. `tools/k1_ufo_sim2sim.py` is: it compiles its own
+MuJoCo model, runs a Python PD loop, and drives the robot through
+`booster_k1_locomotion/ufo_policy_runtime` — the same module the ROS 2 deploy node uses — against
+the exported ONNX policy. Single robot, no randomization, 1 s settle then 6 s of policy, from a
+fallen pose face-up and face-down. Terminal leg pose is the mean over the final 2 s of the trace.
+
+| latent | face-up tts | face-down tts | stood up | hand-off RMS (up / down) | knee (target +0.792) |
+|---|---|---|---|---|---|
+| `standing_pooled` | 0.64 s | 0.72 s | yes | 0.247 / 0.235 | +0.302 / +0.318 |
+| **`cem_s4_5`** | **0.62 s** | **0.72 s** | yes | **0.162 / 0.160** | **+0.485 / +0.489** |
+| `cem_s7_1` | 0.62 s | 0.68 s | yes | 0.167 / 0.160 | +0.478 / +0.487 |
+| `cem_mean` | 0.62 s | 0.70 s | yes | 0.168 / 0.160 | +0.470 / +0.485 |
+| `handoff_pool_500` | 0.60 s | 0.68 s | yes | 0.066 / 0.069 | +0.669 / +0.672 |
+| `wsf_obstacles4_subject2_135` | 0.70 s | 0.78 s | yes | — | — |
+| `wsf_fallAndGetUp1_subject4_8325` | 0.70 s | 0.82 s | yes | — | — |
+
+The deploy path reproduces the batched harness to within 0.01 rad of hand-off RMS (`cem_s4_5`
+0.162/0.160 here vs 0.158–0.161 there; `standing_pooled` 0.247/0.235 vs 0.240–0.243) and confirms
+the `standing_pooled` baseline the brief quotes (0.64 s / 0.72 s) exactly. `cem_s4_5` stands 0.02 s
+*faster* face-up and identically face-down, through a completely different simulator and inference
+stack. `handoff_pool_500` reproduces its crouch here too (knee +0.669 against the +0.792 target),
+which is §4.1's conclusion arrived at independently.
+
+## 7. What did *not* improve
+
+Stated plainly, because three of the four axes in the brief turned out to have no headroom for a
+latent to exploit:
+
+* **Speed did not improve.** The champion stands in 0.86 s; the optimized latents stand in
+  0.84–0.90 s. Paired against the champion on the held-out banks the difference is
+  −0.028 s to +0.006 s, i.e. within ~2 standard errors of zero in every case except one bank-specific
+  −2.6 SE for `cem_s7_1`, which does not replicate on the other bank. Every clean-standing latent in
+  this entire study — 9 seeds, 12 arc points, ~130 CEM samples — lands between 0.78 s and 1.04 s.
+  Time-to-stand looks like a property of the *actor*, not of the latent: the latent selects the
+  target stance, and the policy takes about as long to get there whatever the stance is.
+* **Robustness at the training DR level could not improve, because it is already perfect.** Once the
+  "both feet planted continuously" term is removed, every finalist scores 1.000 upright-stance
+  success in 31 of 32 candidate×bank cells, never falls back, and always rises. There is nothing
+  to optimize. WS-A's 27% was a metric artifact, not a deficiency.
+* **Self-collision did not improve and did not need to.** The champion is at 0.012 nominal, the
+  optimized latents at 0.008–0.014. Under DR the optimized latents are marginally cleaner
+  (0.060–0.102 vs 0.075–0.107) but that gap is not the point of interest.
+* **The hand-off gap is only partly closed.** The optimized latent takes the knee from 0.315 rad to
+  0.467 rad against a 0.792 rad target — from 0.48 rad short to 0.33 rad short, about a third of the
+  gap. The latent that closes it properly (`handoff_pool_500`, knee 0.645 rad, RMS 0.071) exists and
+  works, but it holds its hands against its hips on 82–93% of frames, which is a wear and
+  force-estimation problem on hardware and is exactly the failure mode WS-A disqualified the goal
+  latents for. Within the constraint "self-collision no worse than the champion", 0.154–0.164 rad is
+  where the z-sphere runs out.
+* **WS-F's arm-clearance latents did not turn out to be contenders on these axes.** They are
+  genuinely fixed on self-collision (0.011–0.018 under DR, the cleanest of all finalists, against
+  0.926–0.929 for their unfiltered predecessors) and they are nominally the most robust under the
+  artificial stress tier, but they stand *taller* than the champion (hand-off RMS 0.297–0.366 vs
+  0.242) and 0.06–0.14 s slower. If the deployment priority were "cleanest possible contact under
+  DR", they would be the pick; on hand-off distance and speed they are behind both the champion and
+  the optimized latent.
