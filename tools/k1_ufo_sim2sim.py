@@ -21,7 +21,7 @@ validates the actual deploy code path, not a re-implementation of it.
 
 Example::
 
-    uv run python tools/k1_ufo_sim2sim.py --z-name standing_pooled --video /tmp/getup.mp4
+    uv run python tools/k1_ufo_sim2sim.py --z-name getup_opt --video /tmp/getup.mp4
 """
 
 from __future__ import annotations
@@ -224,7 +224,7 @@ def set_fallen_pose(sim: SimHandles, spec: dict, *, face_down: bool, height: flo
 
 
 def run(
-    z_name: str = "standing_pooled",
+    z_name: str = "getup_opt",
     export_dir: Path = DEFAULT_EXPORT,
     z_bank: Path | None = None,
     video: Path | None = None,
