@@ -1,0 +1,122 @@
+[
+  {
+    "motion_id": 44,
+    "motion_name": "obstacles4_subject2",
+    "frames": [
+      6980
+    ],
+    "goal_type": "standing",
+    "diagnostics": {
+      "leg_dev_rad": 0.4204,
+      "full_dev_rad": 1.0492,
+      "height_m": 0.5401,
+      "tilt_deg": 1.909,
+      "speed_rad_s": 0.2472,
+      "quiet_run_frames_30fps": [
+        4180,
+        4196
+      ],
+      "source_frame_30fps": 4188
+    }
+  },
+  {
+    "motion_id": 63,
+    "motion_name": "sprint1_subject2",
+    "frames": [
+      5347
+    ],
+    "goal_type": "standing",
+    "diagnostics": {
+      "leg_dev_rad": 0.4338,
+      "full_dev_rad": 1.2439,
+      "height_m": 0.5377,
+      "tilt_deg": 3.797,
+      "speed_rad_s": 0.3921,
+      "quiet_run_frames_30fps": [
+        3197,
+        3219
+      ],
+      "source_frame_30fps": 3208
+    }
+  },
+  {
+    "motion_id": 30,
+    "motion_name": "jumps1_subject2",
+    "frames": [
+      48
+    ],
+    "goal_type": "standing",
+    "diagnostics": {
+      "leg_dev_rad": 0.4884,
+      "full_dev_rad": 3.0543,
+      "height_m": 0.5526,
+      "tilt_deg": 4.197,
+      "speed_rad_s": 0.2002,
+      "quiet_run_frames_30fps": [
+        13,
+        45
+      ],
+      "source_frame_30fps": 29
+    }
+  },
+  {
+    "motion_id": 16,
+    "motion_name": "fallAndGetUp2_subject2",
+    "frames": [
+      80
+    ],
+    "goal_type": "standing",
+    "diagnostics": {
+      "leg_dev_rad": 0.5051,
+      "full_dev_rad": 2.4319,
+      "height_m": 0.5493,
+      "tilt_deg": 4.387,
+      "speed_rad_s": 0.4541,
+      "quiet_run_frames_30fps": [
+        36,
+        61
+      ],
+      "source_frame_30fps": 48
+    }
+  },
+  {
+    "motion_id": 6,
+    "motion_name": "dance1_subject2",
+    "frames": [
+      177
+    ],
+    "goal_type": "standing",
+    "diagnostics": {
+      "leg_dev_rad": 0.5087,
+      "full_dev_rad": 2.5223,
+      "height_m": 0.5445,
+      "tilt_deg": 2.745,
+      "speed_rad_s": 0.319,
+      "quiet_run_frames_30fps": [
+        63,
+        150
+      ],
+      "source_frame_30fps": 106
+    }
+  },
+  {
+    "motion_id": 18,
+    "motion_name": "fallAndGetUp3_subject1",
+    "frames": [
+      1963
+    ],
+    "goal_type": "settled_two_feet_stance",
+    "diagnostics": {
+      "leg_dev_rad": 0.816,
+      "full_dev_rad": 1.4365,
+      "height_m": 0.54,
+      "tilt_deg": 4.103,
+      "speed_rad_s": 0.2571,
+      "quiet_run_frames_30fps": [
+        1169,
+        1187
+      ],
+      "source_frame_30fps": 1178
+    }
+  }
+]
