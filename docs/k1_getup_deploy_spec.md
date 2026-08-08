@@ -364,11 +364,25 @@ uprightness 1.00, standing for 94 % of a 10 s rollout. Robust across face-up /
 face-down starts (0.64 s / 0.78–0.82 s) and single / double ground plane.
 Videos: `runs/ufo_fb_k1_5090_v2/export_onnx/getup_sim2sim*.mp4`.
 
+**Verified under real ROS2** (`rclpy`, jazzy, headless, no DDS): `ufo_policy_node`
+constructs, runs `_policy_step` against injected `LowState` values and emits finite
+PD targets; `/ufo/skill` blended and immediate (`!`) switching, `seq:` selection,
+`/ufo/z` injection, and rejection of unknown skills / wrong-sized latents all behave;
+`‖z‖` stays at 16 across 30 ticks including a blend; enable/disable resets history and
+`last_action`; `/ufo/status` publishes.
+
 **Not verified:**
-* Nothing has been run under ROS2. `ufo_policy_node.py` byte-compiles and its runtime
-  is exercised by the sim2sim loop and the unit tests, but the DDS path
-  (`booster_robotics_sdk` LowState/LowCmd), the launch file and `colcon build` are
-  untested here — see §12.
+* The **DDS path**. `booster_robotics_sdk` is not installed on this box, so
+  `_low_state_handler` (field names `motor_state_serial`, `imu_state.rpy`,
+  `imu_state.gyro`) and `_send_command` (`LowCmd`/`MotorCmd`) are copied from the
+  working `rl_policy_node.py` but never exercised. The smoke test stubbed
+  `_send_command` out.
+* **`colcon build`**. It fails on this box at `CMakeLists.txt:124`
+  (`find_package(nlohmann_json REQUIRED)`) — a pre-existing missing system dependency
+  (`nlohmann-json3-dev`), upstream of and unrelated to the one line added here
+  (registering `ufo_policy_node.py` in `install(PROGRAMS ...)`). The launch file has
+  only been syntax-checked.
+* End-to-end `mujoco_sim_node` ↔ `ufo_policy_node` over DDS.
 * No hardware. The gains and default pose in `configs/robots/k1_22dof.yaml` are marked
   `review_status: draft` and have never been validated on a real K1.
 * `mujoco_sim_node.py` clamps torque at `TORQUE_LIMITS` but does **not** implement the
