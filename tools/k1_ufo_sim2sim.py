@@ -303,6 +303,7 @@ def run(
 
     policy.reset()
     heights, uprightness, z_norms = [], [], []
+    dof_pos_log = []
     n_steps = int(seconds / control_dt)
     for _ in range(n_steps):
         q = sim.data.qpos[sim.qpos_adr].copy()
@@ -318,6 +319,7 @@ def run(
         heights.append(float(sim.data.qpos[sim.root_qpos_adr + 2]))
         uprightness.append(-float(gravity[2]))  # 1.0 = trunk upright, 0 = horizontal
         z_norms.append(float(np.linalg.norm(policy.last_z)))
+        dof_pos_log.append(sim.data.qpos[sim.qpos_adr].copy())
         if not np.all(np.isfinite(sim.data.qpos)):
             print("[WARN] simulation diverged")
             break
@@ -348,7 +350,14 @@ def run(
     if trace is not None:
         trace = Path(trace).expanduser()
         trace.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(str(trace), root_height=heights_a, uprightness=upright_a, standing=standing)
+        np.savez(
+            str(trace),
+            root_height=heights_a,
+            uprightness=upright_a,
+            standing=standing,
+            dof_pos=np.asarray(dof_pos_log),
+            dof_names=np.asarray(spec["dof_names"]),
+        )
         print(f"[INFO] wrote trace {trace}")
 
     if renderer is not None and frames:
