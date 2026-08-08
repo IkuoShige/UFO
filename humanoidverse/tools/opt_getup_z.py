@@ -592,14 +592,15 @@ def _named_population(blob: dict[str, Any], device: str) -> dict[str, torch.Tens
 
 
 def _print_table(title: str, names: Sequence[str], results: Sequence[dict[str, Any]], keys: Sequence[str]) -> None:
-    print(f"\n=== {title} ===")
-    print("candidate".ljust(26) + "".join(k.rjust(15) for k in keys))
+    lines = [f"\n=== {title} ===", "candidate".ljust(30) + "".join(k.rjust(15) for k in keys)]
     for name, r in zip(names, results):
         cells = []
         for k in keys:
             v = r.get(k, float("nan"))
             cells.append((f"{v:.3f}" if isinstance(v, float) else str(v)).rjust(15))
-        print(name.ljust(26) + "".join(cells))
+        lines.append(name.ljust(30) + "".join(cells))
+    # flush: stdout is block-buffered when redirected, which otherwise hides progress for minutes.
+    print("\n".join(lines), flush=True)
 
 
 # --------------------------------------------------------------------------------------
