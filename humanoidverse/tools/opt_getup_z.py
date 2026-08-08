@@ -713,10 +713,10 @@ def cmd_search(args) -> None:
         pose_cfg = PoseBankConfig(bucket=bucket, motion_pool=search_pool,
                                   ood_yaws=8, ood_drop_height=0.30)
         nom = evaluate_population(ctx_nom, z_pop, pose_cfg=pose_cfg, roll_cfg=roll_nom,
-                                  seed_key=[scfg.seed, it, 0], batches=1,
+                                  seed_key=[scfg.seed, it + 1, 0], batches=1,
                                   self_collision=True, collision_stride=10)
         dr = evaluate_population(ctx_dr, z_pop, pose_cfg=pose_cfg, roll_cfg=roll_dr,
-                                 seed_key=[scfg.seed, it, 1], batches=1, self_collision=False)
+                                 seed_key=[scfg.seed, it + 1, 1], batches=1, self_collision=False)
         J = np.array([composite(n, d, weights) for n, d in zip(nom, dr)])
         j_champ = float(J[labels.index(champ)]) if champ in labels else float("nan")
         order = np.argsort(-J)
