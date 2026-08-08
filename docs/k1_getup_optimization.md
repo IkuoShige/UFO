@@ -565,3 +565,83 @@ the residual is structural. WS-A's conclusion that "closing it is a hand-off pro
 z-selection problem" is half right — a third of it *was* a z-selection problem, and the rest is not
 free. Closing the remainder means either a blend window, a walk policy tolerant of a taller stance,
 or accepting the arm-clearance cost of a deeper commanded crouch.
+
+## 9. Compute, artifacts and reproduction
+
+### 9.1 Compute spent
+
+All on one (shared) RTX 3090; no training was launched at any point.
+
+| stage | batched rollouts | episodes | wall clock |
+|---|---|---|---|
+| timing calibration (2 candidates, 128 envs) | 2 | 256 | 1 min |
+| probe: crouch scan + 3 DR tiers × 9 candidates (126 envs) | 3 | 378 | 10 min |
+| **discarded** first search (binary DR term, 3 iterations) | 6 | 864 | 3 min |
+| CEM search (12 iterations × 2 tiers, 144 envs, 6 s episodes) | 24 | 3 456 | 8 min |
+| final evaluation (12 conditions × 3 batches, 128 envs, 10 s episodes) | 36 | 4 608 | 25 min |
+| **total (GPU)** | **71** | **9 562** | **≈47 min** |
+| sim2sim confirmation (single robot, CPU + onnxruntime) | — | 14 | ≈9 min |
+
+Peak GPU memory 6.9 GB with two 144-env environments resident simultaneously (nominal + stress),
+which is what makes one nominal and one DR rollout per CEM iteration affordable without rebuilding.
+The motion-library scan that produces the crouch latents and the standing principal directions runs
+in ~2 s over all 77 clips and is cached in `runs/getup_opt/z_sources.pt`.
+
+### 9.2 Artifacts
+
+| path | contents |
+|---|---|
+| `humanoidverse/tools/opt_getup_z.py` | the tool: `probe` / `search` / `final` / `bank` |
+| `runs/getup_opt/z_sources.pt` | cached seed latents, crouch-pooled latents, standing principal directions, scan statistics |
+| `runs/getup_opt/probe.json` | the three-tier probe that established the DR-metric result |
+| `runs/getup_opt/search_trace.json` | every evaluated latent with its coordinates and full metrics (`hall`), plus the per-iteration trace and the search config |
+| `runs/getup_opt/search_state.pt` | subspace basis, CEM mean and per-coordinate std, seed coordinates |
+| `runs/getup_opt/final_results.json` | all 12 conditions × 8 finalists, aggregates **and** per-episode arrays for paired statistics |
+| `runs/getup_opt/finalist_z.pt`, `z_bank_finalists.npz` | the finalist latents (`.npz` is loadable by `tools/k1_ufo_sim2sim.py --z-bank`) |
+| `runs/getup_opt/decision.json` | the pre-registered rule, every candidate's numbers, the verdicts, paired statistics |
+| `runs/getup_eval/z_bank.pt` | **`getup` untouched**; new key `getup_opt_ws_e` = `cem_s4_5` with `z` / `mode` / `source` / `score` / `holdout_score` / `paired_vs_champion` / `search_config` / `z_dim` |
+
+### 9.3 Reproducing
+
+```bash
+# 1. probe: crouch-frame scan + DR-tier discrimination check (writes runs/getup_opt/z_sources.pt)
+uv run python -m humanoidverse.tools.opt_getup_z probe --out-dir runs/getup_opt
+
+# 2. CEM search (warm-start arc sweep, then CEM; writes search_trace.json every iteration)
+uv run python -m humanoidverse.tools.opt_getup_z search --out-dir runs/getup_opt
+
+# 3. full-fidelity finals over search + held-out banks, 3 DR tiers
+uv run python -m humanoidverse.tools.opt_getup_z final --out-dir runs/getup_opt \
+    --n-finalists 3 --final-cond 16 --final-batches 3 \
+    --extra-finalists handoff_pool_500 wsf_obstacles4_subject2_135 wsf_fallAndGetUp1_subject4_8325
+
+# 4. decision rule + z-bank write (+ an .npz for sim2sim)
+uv run python -m humanoidverse.tools.opt_getup_z bank --out-dir runs/getup_opt \
+    --bank-key getup_opt_ws_e --bank-z cem_s4_5
+
+# 5. independent confirmation through the deploy runtime
+uv run python tools/k1_ufo_sim2sim.py --z-name cem_s4_5 \
+    --z-bank runs/getup_opt/z_bank_finalists.npz --seconds 6 --trace /tmp/t.npz   # add --face-down
+```
+
+Prefix commands with `PYTHONPATH=` on a box where ROS 2 leaks into `PYTHONPATH`, and export
+`MUJOCO_GL=egl`. `--rescan` rebuilds `z_sources.pt`; note that two of the basis seeds come from a
+`goal_reaching.pkl` that has since been regenerated with a different key set (§3.2), so a rescan
+today produces a 15-dimensional subspace rather than the 17-dimensional one used here, and the tool
+warns and continues rather than aborting.
+
+### 9.4 Caveats
+
+* **Simulation only.** No hardware. Sim-to-real for get-up involves large contact forces and
+  near-limit torques.
+* **The stress tier is not a sim-to-real claim.** It is 3× the training push magnitude, invented to
+  create a robustness signal where the training tier has none, and it is out of distribution by
+  construction. The deployment-relevant tier is training DR, where everything scores 1.000.
+* **The composite's weights are arbitrary.** Per-axis numbers are all in
+  `runs/getup_opt/final_results.json`, so the ranking can be recomputed under a different weighting
+  without re-simulating.
+* **The search subspace is 17-dimensional**, not 256. It spans the strong hand-derived latents plus
+  the principal directions of the standing manifold. A latent outside that span could in principle
+  do better; nothing here rules that out.
+* **48 episodes per candidate per condition** gives ≈0.07 standard error on a binary rate. That is
+  ample for the hand-off axis (≈170 SE) and marginal for the stress-robustness axis (§8.2).
