@@ -1000,20 +1000,20 @@ def cmd_bank(args) -> None:
             if r is None:
                 continue
             row["conditions"][cond] = {k: v for k, v in r.items() if not k.startswith("_ep_")}
-        js = []
-        for bucket in ("indist_holdout", "ood_holdout"):
-            nom = get(f"nominal:{bucket}", name)
-            dr = get(f"dr:{bucket}", name)
-            if nom is not None:
-                js.append(composite(nom, dr, weights))
-        row["J_holdout"] = float(np.mean(js)) if js else float("nan")
-        js_s = []
-        for bucket in ("indist_search", "ood_search"):
-            nom = get(f"nominal:{bucket}", name)
-            dr = get(f"dr:{bucket}", name)
-            if nom is not None:
-                js_s.append(composite(nom, dr, weights))
-        row["J_search"] = float(np.mean(js_s)) if js_s else float("nan")
+        # J's robustness term is the *stress* tier, as declared in the objective: the training-DR
+        # tier is saturated at 1.000 for every finalist, so it carries no ranking information --
+        # it is enforced as a no-regression gate instead.
+        for label, buckets in (("J_holdout", ("indist_holdout", "ood_holdout")),
+                               ("J_search", ("indist_search", "ood_search"))):
+            js = []
+            for bucket in buckets:
+                nom = get(f"nominal:{bucket}", name)
+                if nom is not None:
+                    js.append(composite(nom, get(f"stress:{bucket}", name), weights))
+            row[label] = float(np.mean(js)) if js else float("nan")
+            js_tr = [composite(get(f"nominal:{b}", name), get(f"dr:{b}", name), weights)
+                     for b in buckets if get(f"nominal:{b}", name) is not None]
+            row[label + "_trainingdr"] = float(np.mean(js_tr)) if js_tr else float("nan")
         # paired deltas vs champion on the held-out banks
         row["paired_vs_champion"] = {}
         for bucket in ("indist_holdout", "ood_holdout"):
