@@ -913,9 +913,6 @@ def main() -> None:
     {"probe": cmd_probe, "search": cmd_search, "final": cmd_final, "bank": cmd_bank}[args.command](args)
 
 
-if __name__ == "__main__":
-    main()
-
 
 # --------------------------------------------------------------------------------------
 # subcommand: bank  (decision rule + z-bank write)
@@ -1063,3 +1060,6 @@ def cmd_bank(args) -> None:
         npz = {f"z/{n}": zs[n].numpy().astype(np.float32) for n in names}
         np.savez(str(Path(args.npz_out).expanduser()), **npz)
         print(f"[INFO] wrote sim2sim z-bank -> {args.npz_out}")
+
+if __name__ == "__main__":
+    main()
