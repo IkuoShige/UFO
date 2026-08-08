@@ -23,12 +23,12 @@ further is now measured.**
   one is within 0.01 s of the champion. Time-to-stand looks like a property of the actor, not the
   latent (§7).
 * **The walk hand-off gap is closable in z-space, and partly closable for free.** The optimized
-  latent `cem_s4_5` cuts terminal-pose RMS distance from **0.242 → 0.161 rad** (knee +0.309 →
-  +0.491 against a +0.792 target), closer on all six leg joints, at unchanged success, speed and
+  latent `cem_s4_5` cuts terminal-pose RMS distance from **0.242 → 0.161 rad** (knee, averaged over
+  both legs, +0.315 → +0.457 against a +0.792 target), closer on all six leg joints, at unchanged success, speed and
   self-collision — a paired improvement of over 100 standard errors on both held-out banks
   (−108 SE OOD, −173 SE in-distribution), and reproduced through the exported ONNX deploy path in a second simulator (§5, §6).
 * **Closing the gap *fully* costs exactly what WS-A's disqualified goal latents cost.** A latent
-  pooled from the dataset frames nearest the hand-off pose gets to **0.070 rad** (knee +0.653) and
+  pooled from the dataset frames nearest the hand-off pose gets to **0.070 rad** (knee +0.648) and
   stands in 0.84 s — but holds its hands against its hips on 82–93% of frames and is the one
   candidate measurably less robust to pushes (−0.120 ± 0.040). The self-collision cliff sits at
   t ≈ 0.35–0.50 along the arc between the two (§4.1).
@@ -439,13 +439,13 @@ MuJoCo model, runs a Python PD loop, and drives the robot through
 the exported ONNX policy. Single robot, no randomization, 1 s settle then 6 s of policy, from a
 fallen pose face-up and face-down. Terminal leg pose is the mean over the final 2 s of the trace.
 
-| latent | face-up tts | face-down tts | stood up | hand-off RMS (up / down) | knee (target +0.792) |
+| latent | face-up tts | face-down tts | stood up | hand-off RMS (up / down) | knee, both legs (target +0.792) |
 |---|---|---|---|---|---|
-| `standing_pooled` | 0.64 s | 0.72 s | yes | 0.247 / 0.235 | +0.302 / +0.318 |
-| **`cem_s4_5`** | **0.62 s** | **0.72 s** | yes | **0.162 / 0.160** | **+0.485 / +0.489** |
-| `cem_s7_1` | 0.62 s | 0.68 s | yes | 0.167 / 0.160 | +0.478 / +0.487 |
-| `cem_mean` | 0.62 s | 0.70 s | yes | 0.168 / 0.160 | +0.470 / +0.485 |
-| `handoff_pool_500` | 0.60 s | 0.68 s | yes | 0.066 / 0.069 | +0.669 / +0.672 |
+| `standing_pooled` | 0.64 s | 0.72 s | yes | 0.247 / 0.235 | +0.311 / +0.325 |
+| **`cem_s4_5`** | **0.62 s** | **0.72 s** | yes | **0.162 / 0.160** | **+0.454 / +0.456** |
+| `cem_s7_1` | 0.62 s | 0.68 s | yes | 0.167 / 0.160 | (left +0.478 / +0.487) |
+| `cem_mean` | 0.62 s | 0.70 s | yes | 0.168 / 0.160 | (left +0.470 / +0.485) |
+| `handoff_pool_500` | 0.60 s | 0.68 s | yes | 0.066 / 0.069 | (left +0.669 / +0.672) |
 | `wsf_obstacles4_subject2_135` | 0.70 s | 0.78 s | yes | — | — |
 | `wsf_fallAndGetUp1_subject4_8325` | 0.70 s | 0.82 s | yes | — | — |
 
@@ -453,8 +453,12 @@ The deploy path reproduces the batched harness to within 0.01 rad of hand-off RM
 0.162/0.160 here vs 0.158–0.161 there; `standing_pooled` 0.247/0.235 vs 0.240–0.243) and confirms
 the `standing_pooled` baseline the brief quotes (0.64 s / 0.72 s) exactly. `cem_s4_5` stands 0.02 s
 *faster* face-up and identically face-down, through a completely different simulator and inference
-stack. `handoff_pool_500` reproduces its crouch here too (knee +0.669 against the +0.792 target),
-which is §4.1's conclusion arrived at independently.
+stack. `handoff_pool_500` reproduces its crouch here too (left knee +0.669 against the +0.792
+target), which is §4.1's conclusion arrived at independently.
+
+These both-leg knee figures (`cem_s4_5` +0.454 / +0.456, `standing_pooled` +0.311 / +0.325) are the
+ones quoted in `docs/k1_getup_plan.md`'s promotion table; rows marked *(left)* above are left-leg
+only and are not directly comparable to them — see §7.1 on the leg asymmetry.
 
 ## 7. What did *not* improve
 
@@ -475,9 +479,10 @@ latent to exploit:
 * **Self-collision did not improve and did not need to.** The champion is at 0.012 nominal, the
   optimized latents at 0.008–0.014. Under DR the optimized latents are marginally cleaner
   (0.060–0.102 vs 0.075–0.107) but that gap is not the point of interest.
-* **The hand-off gap is only partly closed.** The optimized latent takes the knee from 0.309 rad to
-  0.491 rad against a 0.792 rad target — from 0.48 rad short to 0.30 rad short, about a third of the
-  gap. The latent that closes it properly (`handoff_pool_500`, knee 0.653 rad, RMS 0.070) exists and
+* **The hand-off gap is only partly closed.** The optimized latent takes the knee (both legs) from
+  0.315 rad to 0.457 rad against a 0.792 rad target — from 0.48 rad short to 0.34 rad short, about a
+  third of the gap. The latent that closes it properly (`handoff_pool_500`, knee 0.648 rad,
+  RMS 0.070) exists and
   works, but it holds its hands against its hips on 82–93% of frames — a wear and force-estimation
   problem on hardware, exactly the failure mode WS-A disqualified the goal latents for — *and* it is
   the one candidate measurably less robust to pushes (§5.3, −0.120 ± 0.040). Within the constraint
@@ -493,8 +498,12 @@ latent to exploit:
 
 ### 7.1 Terminal leg pose, side by side
 
-Mean over the final 2 s of standing episodes on the two **held-out** banks (left leg; right is the
-mirror). This is the whole of the improvement, in the units the walk hand-off actually cares about.
+Mean over the final 2 s of standing episodes on the two **held-out** banks. Per-joint rows are the
+**left leg**; the `knee Δ` / `RMS Δ` / `max abs Δ` summary rows average over **both** legs, which is
+the convention of every `knee Δ` column in this document and of `handoff_knee` in the JSON. The two
+are not interchangeable for `cem_s4_5`: its legs are not symmetric (sim2sim left knee +0.485,
+right +0.423, mean +0.454), whereas `standing_pooled` is closer to symmetric (+0.302 / +0.319).
+Quote the both-leg mean unless you specifically want one side.
 
 | joint | walk-policy target | `standing_pooled` | **`cem_s4_5`** | `handoff_pool_500` (disqualified) |
 |---|---|---|---|---|
@@ -508,7 +517,9 @@ mirror). This is the whole of the improvement, in the units the walk hand-off ac
 | **max abs Δ** | — | 0.483 | **0.370** | 0.151 |
 | **knee Δ** | — | −0.477 | **−0.335** | −0.144 |
 
-`cem_s4_5` is closer to the target on *every one of the six joints*, not just the knee.
+`cem_s4_5` is closer to the target on **all twelve leg joints** — both legs, every joint, not just
+the knee (checked explicitly against `pose_*` in `final_results.json`; the right leg's largest
+remaining error is the knee at 0.370 rad, the left leg's at 0.301 rad).
 
 ## 8. Decision
 
@@ -556,7 +567,7 @@ of the evidence for `cem_s4_5` versus `standing_pooled`, on held-out initial con
 | nominal success | 1.000 | 1.000 | 0 |
 | training-DR upright stance | 1.000 | 1.000 | 0 |
 | **hand-off RMS** | 0.242 | **0.161** | **−0.081 ± 0.0005 (−173 SE in-dist, −108 SE OOD)** |
-| knee angle | +0.309 | **+0.491** | +0.182 |
+| knee angle (both legs) | +0.315 | **+0.457** | +0.142 |
 | time-to-stand | 0.86 / 0.89 s | 0.86 / 0.90 s | +0.001 ± 0.014 s |
 | self-collision (nominal) | 0.014 / 0.006 | 0.011 / 0.007 | ≈0 |
 | self-collision (training DR) | 0.075 / 0.105 | 0.063 / 0.102 | ≈0 |
@@ -586,7 +597,7 @@ because the `getup` key in `runs/getup_eval/z_bank.pt` is untouched and promotio
 change in whatever selects the deploy key.
 
 **Do not ship `handoff_pool_500`,** even though it is the only latent that nearly closes the
-hand-off gap (RMS 0.070, knee +0.653). It self-collides hand-on-hip on 82–93% of frames and it is
+hand-off gap (RMS 0.070, knee +0.648). It self-collides hand-on-hip on 82–93% of frames and it is
 the one candidate measurably worse under pushes (−0.120 ± 0.040). It is recorded here as the
 existence proof, not as a deployable option.
 
