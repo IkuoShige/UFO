@@ -54,10 +54,11 @@ Two goal groups are emitted:
 
 The **first entry in the JSON is the canonical "standing" goal**
 (`obstacles4_subject2`, lowest leg deviation of all candidates: leg_dev=0.42
-rad, tilt=1.9°, height=0.540 m). Its `diagnostics.source_frame_30fps=4188`
-head has a ~0.62 rad yaw (looking around during the obstacle course) if that
-matters downstream — `sprint1_subject2` (2nd entry) is a similar-quality
-alternative with a more neutral head pose.
+rad, tilt=1.9°, height=0.540 m, at `diagnostics.source_frame_30fps=4188`).
+Note: at this frame the head is yawed ~0.62 rad (the robot is looking around
+mid-obstacle-course), which is baked into this goal's pose — if that matters
+downstream, `sprint1_subject2` (2nd entry) is a similar-quality alternative
+with a more neutral head pose.
 
 ### Units: `frames` are control-step indices, not raw mocap frame numbers
 
