@@ -10,10 +10,10 @@ Raw results: `runs/getup_eval/` (`episodes_<tag>.csv`, `summary_<tag>.json`, `z_
 get-up latent — and every constant `z` derived from a get-up motion fails completely.**
 
 From a fallen pose drawn from the training `lie_down_init` distribution, a single constant
-`z` (`standing_pooled`, saved in `runs/getup_eval/z_bank.pt`) stands the K1 up in **0.87 s** with
+`z` (`standing_pooled`, saved in `runs/getup_eval/z_bank.pt`) stands the K1 up in **0.89 s** with
 **100% success over 128 episodes** (≥97.7% at 95% confidence, rule of three), holds 2.1° max tilt,
 saturates a joint torque limit on 0.1% of joint-steps and self-collides on 1.5% of frames. The same
-`z` scores **100% at 0.87 s on the out-of-distribution bucket** (supine/prone/side-lying swept over
+`z` scores **100% at 0.87 s (n=64) on the out-of-distribution bucket** (supine/prone/side-lying swept over
 root yaw) — the OOD sweep is not harder for it at all.
 
 Meanwhile *every* latent built from a get-up motion segment — mean over one segment, mean over all
@@ -80,7 +80,11 @@ transform, used to give z-sequence replay its best case (see §4).
 **Settle window.** After the reset, physics runs for 1.0 s with zero action (PD holds the default
 pose) before the policy takes over and before any timer starts. Measured root speed at takeover is
 0.016 m/s / 0.13 rad/s, i.e. fully settled. This *is* a deviation from training, where the policy
-takes over mid-drop from 0.5 m; `--settle-steps 0` reproduces the training condition.
+takes over mid-drop from 0.5 m; `--settle-steps 0` reproduces the training condition. Measured
+both ways (`indist_nominal_settle0`, n=64): removing the settle window changes nothing about
+reliability (100% success, 100% rose) and makes the get-up *faster* — 0.68 s vs 0.89 s — because the
+policy begins recovering while the robot is still falling. The settle window is therefore the
+conservative choice, and every number in this document is the conservative one.
 
 ### 1.3 Standing criterion (explicit, and arbitrary in its thresholds)
 
@@ -420,6 +424,27 @@ noise and latency (which training never included: MJLab's config path drops
 `randomize_ctrl_delay`). `rose` and `upright-hold` are 100% in every row of this table.
 
 
+### 4.2 The goal-inference latents hold their hands against their hips
+
+All three goal-derived standing latents self-collide on ~93% of frames, against 1.5% for
+`standing_pooled` and 2.4% for `reward_move_ego_0_0`. The offending pairs are the same in every
+case and are unambiguous:
+
+| candidate | dominant contact pairs (frame counts) | self-collision frac |
+|---|---|---|
+| `goal_fallAndGetUp3_stand` | `left_hand_link`↔`Left_Hip_Yaw` (5344), `right_hand_link`↔`Right_Hip_Yaw` (3586) | 0.926 |
+| `goal_standing_canonical` | `left_hand_link`↔`Left_Hip_Yaw` (4066), `right_hand_link`↔`Right_Hip_Yaw` (3389) | 0.929 |
+| `goal_sprint1_stand` | `left_hand_link`↔`Left_Hip_Yaw` (3672), `right_hand_link`↔`Right_Hip_Roll` (3409) | 0.926 |
+| `standing_pooled` | same pairs, 13–33 frames | 0.015 |
+
+The hands rest continuously against the hips — the goal frames encode a stance with the arms
+pressed to the body, and the policy reproduces it faithfully. It is not a get-up failure (these
+latents stand up perfectly well, and are the *most* robust under DR), but continuous limb-on-limb
+contact is a wear and force-estimation problem on hardware, so these latents are disqualified from
+selection here. **Actionable for WS-C**: the same goal-inference pipeline with a frame whose arms
+clear the hips should keep the DR robustness without the contact — worth an arm-clearance filter in
+the goal-frame selection alongside the existing tilt/height/joint-speed filters.
+
 ## 5. Terminal stance vs the walk-policy hand-off pose
 
 Mean leg pose over the final 2 s of standing episodes, against the pose the existing
@@ -520,6 +545,10 @@ uv run python -m humanoidverse.tools.eval_getup --emit-default-candidates my_can
 ```
 
 `--num-envs 64` uses ~5.7 GB of VRAM and runs a 27-candidate condition in ~13 min on an RTX 3090.
+
+`runs/` is gitignored, so the exact 27-candidate file used for these results is committed alongside
+this document as `docs/k1_getup_candidates.json` (copy it to `runs/getup_eval/candidates.json`).
+`--emit-default-candidates` writes a smaller starter set, not this one.
 
 ### Artifacts
 

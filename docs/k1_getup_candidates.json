@@ -1,0 +1,305 @@
+[
+  {
+    "name": "reward_move_ego_0_0",
+    "type": "constant",
+    "source": {
+      "kind": "file",
+      "path": "runs/ufo_fb_k1_5090_v2/reward_inference/reward_locomotion.pkl",
+      "key": "move-ego-0-0"
+    }
+  },
+  {
+    "name": "getup_pooled_all",
+    "type": "constant",
+    "source": {
+      "kind": "motion_getup_mean",
+      "motion_ids": [
+        16,
+        17,
+        55,
+        27
+      ]
+    }
+  },
+  {
+    "name": "m16_pooled_mean",
+    "type": "constant",
+    "source": {
+      "kind": "motion_getup_mean",
+      "motion_ids": [
+        16
+      ]
+    }
+  },
+  {
+    "name": "m17_pooled_mean",
+    "type": "constant",
+    "source": {
+      "kind": "motion_getup_mean",
+      "motion_ids": [
+        17
+      ]
+    }
+  },
+  {
+    "name": "m55_pooled_mean",
+    "type": "constant",
+    "source": {
+      "kind": "motion_getup_mean",
+      "motion_ids": [
+        55
+      ]
+    }
+  },
+  {
+    "name": "m27_pooled_mean",
+    "type": "constant",
+    "source": {
+      "kind": "motion_getup_mean",
+      "motion_ids": [
+        27
+      ]
+    }
+  },
+  {
+    "name": "m16_seg0_mean",
+    "type": "constant",
+    "source": {
+      "kind": "motion_segment_mean",
+      "motion_id": 16,
+      "segment": 0
+    }
+  },
+  {
+    "name": "m16_seg3_mean",
+    "type": "constant",
+    "source": {
+      "kind": "motion_segment_mean",
+      "motion_id": 16,
+      "segment": 3
+    }
+  },
+  {
+    "name": "m16_seg7_mean",
+    "type": "constant",
+    "source": {
+      "kind": "motion_segment_mean",
+      "motion_id": 16,
+      "segment": 7
+    }
+  },
+  {
+    "name": "m17_seg1_mean",
+    "type": "constant",
+    "source": {
+      "kind": "motion_segment_mean",
+      "motion_id": 17,
+      "segment": 1
+    }
+  },
+  {
+    "name": "m55_seg0_mean",
+    "type": "constant",
+    "source": {
+      "kind": "motion_segment_mean",
+      "motion_id": 55,
+      "segment": 0
+    }
+  },
+  {
+    "name": "m16_seg0_replay",
+    "type": "sequence",
+    "source": {
+      "kind": "motion_segment",
+      "motion_id": 16,
+      "segment": 0,
+      "pad_end_s": 2.0
+    }
+  },
+  {
+    "name": "m16_seg3_replay",
+    "type": "sequence",
+    "source": {
+      "kind": "motion_segment",
+      "motion_id": 16,
+      "segment": 3,
+      "pad_end_s": 2.0
+    }
+  },
+  {
+    "name": "m16_seg7_replay",
+    "type": "sequence",
+    "source": {
+      "kind": "motion_segment",
+      "motion_id": 16,
+      "segment": 7,
+      "pad_end_s": 2.0
+    }
+  },
+  {
+    "name": "m17_seg1_replay",
+    "type": "sequence",
+    "source": {
+      "kind": "motion_segment",
+      "motion_id": 17,
+      "segment": 1,
+      "pad_end_s": 2.0
+    }
+  },
+  {
+    "name": "m55_seg0_replay",
+    "type": "sequence",
+    "source": {
+      "kind": "motion_segment",
+      "motion_id": 55,
+      "segment": 0,
+      "pad_end_s": 2.0
+    }
+  },
+  {
+    "name": "standing_pooled",
+    "type": "constant",
+    "source": {
+      "kind": "motion_standing_mean",
+      "motion_ids": [
+        16,
+        17,
+        55,
+        65
+      ]
+    }
+  },
+  {
+    "name": "tp_pooled_then_stand_3s",
+    "type": "two_phase",
+    "switch_s": 3.0,
+    "phase_a": {
+      "type": "constant",
+      "source": {
+        "kind": "motion_getup_mean",
+        "motion_ids": [
+          16,
+          17,
+          55,
+          27
+        ]
+      }
+    },
+    "phase_b": {
+      "type": "constant",
+      "source": {
+        "kind": "motion_standing_mean",
+        "motion_ids": [
+          16,
+          17,
+          55,
+          65
+        ]
+      }
+    }
+  },
+  {
+    "name": "tp_replay_then_stand_3s",
+    "type": "two_phase",
+    "switch_s": 3.0,
+    "phase_a": {
+      "type": "sequence",
+      "source": {
+        "kind": "motion_segment",
+        "motion_id": 16,
+        "segment": 3
+      }
+    },
+    "phase_b": {
+      "type": "constant",
+      "source": {
+        "kind": "motion_standing_mean",
+        "motion_ids": [
+          16,
+          17,
+          55,
+          65
+        ]
+      }
+    }
+  },
+  {
+    "name": "random_0",
+    "type": "constant",
+    "source": {
+      "kind": "random",
+      "seed": 0
+    }
+  },
+  {
+    "name": "random_1",
+    "type": "constant",
+    "source": {
+      "kind": "random",
+      "seed": 1
+    }
+  },
+  {
+    "name": "random_2",
+    "type": "constant",
+    "source": {
+      "kind": "random",
+      "seed": 2
+    }
+  },
+  {
+    "name": "random_3",
+    "type": "constant",
+    "source": {
+      "kind": "random",
+      "seed": 3
+    }
+  },
+  {
+    "name": "goal_standing_canonical",
+    "type": "constant",
+    "source": {
+      "kind": "file",
+      "path": "runs/getup_eval/z_goal_standing.pt"
+    }
+  },
+  {
+    "name": "goal_sprint1_stand",
+    "type": "constant",
+    "source": {
+      "kind": "file",
+      "path": "runs/ufo_fb_k1_5090_v2/goal_inference/goal_reaching.pkl",
+      "key": "sprint1_subject2_5347"
+    }
+  },
+  {
+    "name": "goal_fallAndGetUp3_stand",
+    "type": "constant",
+    "source": {
+      "kind": "file",
+      "path": "runs/ufo_fb_k1_5090_v2/goal_inference/goal_reaching.pkl",
+      "key": "fallAndGetUp3_subject1_1963"
+    }
+  },
+  {
+    "name": "tp_replay_then_goalstand_4s",
+    "type": "two_phase",
+    "switch_s": 4.0,
+    "phase_a": {
+      "type": "sequence",
+      "source": {
+        "kind": "motion_segment",
+        "motion_id": 16,
+        "segment": 3,
+        "pad_end_s": 2.0
+      }
+    },
+    "phase_b": {
+      "type": "constant",
+      "source": {
+        "kind": "file",
+        "path": "runs/getup_eval/z_goal_standing.pt"
+      }
+    }
+  }
+]
