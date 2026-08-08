@@ -56,6 +56,39 @@ whole-body speed < 0.5 rad/s. Runs of >=15 consecutive quiet-standing frames
 (0.5 s at 30 fps) are kept (drops single-frame coincidences); each run
 contributes its center frame as a candidate, tagged with its diagnostics.
 
+### Arm/hand clearance filter
+
+A WS-A evaluation (`docs/k1_getup_eval.md` Sec. 4.2) found that the previous
+version of this generator's top candidates all rest the hands against the
+hips (`left_hand_link` <-> `Left_Hip_Yaw` and the mirror), causing continuous
+self-collision (~93% of rollout frames) once turned into goal latents and
+replayed closed-loop -- a hardware wear/force-estimation problem, even though
+those latents were otherwise the most DR-robust candidates found. This is a
+geometric property of the candidate pose, not something the tilt/height/speed
+filters above can see, so each candidate run's center frame is additionally
+checked for **arm clearance**: forward-kinematics the K1 MuJoCo model
+(`../booster_assets/robots/K1/K1_22dof.xml`) to that frame's root pose + dof
+pose, then compute the exact signed distance (`mujoco.mj_geomDistance`, not a
+contact/margin test) between every collision geom on `left_hand_link` /
+`right_hand_link` and every collision geom on `Trunk`, `Left_Hip_Roll`,
+`Left_Hip_Yaw`, `Right_Hip_Roll`, `Right_Hip_Yaw` -- exactly the body set
+implicated in the disqualifying report. The minimum over all those geom pairs
+is the candidate's `clearance_m`; candidates below `--min-clearance` (default
+0.08 m) are dropped before goal-entry selection.
+
+The threshold is a label for an empirical gap, not a tuned value: across the
+92 quiet-standing runs found in the K1 LAFAN1 set, clearance is sharply
+bimodal -- one cluster at -0.02 to +0.07 m (hands pressed against the hip,
+sometimes penetrating) and another at +0.18 to +0.20 m (hands hanging clear
+at the sides), with a zero-candidate gap from 0.068 to 0.179 m between them.
+Any threshold in that gap selects the identical 69/92 surviving runs; 0.08 m
+was picked as a round number inside it, and the tool prints the survival
+count at several thresholds every run so this is auditable rather than
+asserted. Surviving candidates trade a somewhat worse `leg_dev` for arms held
+away from the body -- `full_dev` (which includes the 10 arm/head DOFs) rises
+accordingly; this is the filter doing its job, not a regression against the
+leg-focused diagnostics above.
+
 Two goal groups are emitted:
   - "standing": the 5 candidates with the lowest leg deviation, one per
     distinct motion (diversity across walk/run/obstacle/etc. motions).
@@ -84,6 +117,7 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
@@ -100,6 +134,77 @@ DEFAULT_OUTPUT = "humanoidverse/data/robots/k1/goal_frames_k1_22dof.json"
 LEG_DOF_SLICE = slice(10, 22)
 
 FALL_MOTION_KEYWORDS = ("fallandgetup", "pushandfall")
+
+# Bodies implicated in the self-collision report (docs/k1_getup_eval.md Sec. 4.2):
+# hand-link geoms resting against hip/torso geoms.
+HAND_BODIES = ("left_hand_link", "right_hand_link")
+HIP_TORSO_BODIES = ("Trunk", "Left_Hip_Roll", "Left_Hip_Yaw", "Right_Hip_Roll", "Right_Hip_Yaw")
+DEFAULT_MIN_CLEARANCE = 0.08  # meters; see module docstring for the empirical-gap justification.
+CLEARANCE_REPORT_THRESHOLDS = (0.0, 0.01, 0.02, 0.05, 0.08, 0.10, 0.15)
+
+
+def _collision_geom_ids(model: "mujoco.MjModel", body_name: str) -> list[int]:
+    """Geoms on ``body_name`` that actually participate in MuJoCo collision detection
+
+    (``contype != 0 or conaffinity != 0``) -- excludes the contype=0/conaffinity=0 visual
+    meshes the K1 XML layers over most collision primitives.
+    """
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+    if body_id < 0:
+        raise ValueError(f"Body '{body_name}' not found in {model}")
+    return [
+        g
+        for g in range(model.ngeom)
+        if int(model.geom_bodyid[g]) == body_id and (model.geom_contype[g] != 0 or model.geom_conaffinity[g] != 0)
+    ]
+
+
+def compute_arm_clearance(
+    motion_data: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    *,
+    xml_path: Path,
+) -> None:
+    """Adds ``clearance_m`` / ``clearance_pair`` to each candidate dict, in place.
+
+    For each candidate's center frame: forward-kinematics the K1 MuJoCo model to that
+    frame's root pose + dof_pos (mirrors ``reference_qpos`` in
+    ``humanoidverse/tools/eval_getup.py``: ``qpos = [root_pos, roll(root_quat_xyzw, 1),
+    dof_pos]``, control-joint order == MuJoCo qpos-address order for K1), then take the
+    minimum ``mujoco.mj_geomDistance`` (exact signed distance, not a margin/contact
+    test) over every (hand-link geom, hip/torso geom) pair.
+    """
+    model = mujoco.MjModel.from_xml_path(str(xml_path))
+    data = mujoco.MjData(model)
+    hand_geoms = [g for b in HAND_BODIES for g in _collision_geom_ids(model, b)]
+    hip_torso_geoms = [g for b in HIP_TORSO_BODIES for g in _collision_geom_ids(model, b)]
+
+    def body_of(geom_id: int) -> str:
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[geom_id]))
+        return str(name) if name else f"body{model.geom_bodyid[geom_id]}"
+
+    qpos = np.zeros(model.nq, dtype=np.float64)
+    for c in candidates:
+        entry = motion_data[c["motion_name"]]
+        frame = c["frame"]
+        root_pos = np.asarray(entry["root_trans_offset"], dtype=np.float64)[frame]
+        quat_xyzw = np.asarray(entry["root_quat"], dtype=np.float64)[frame]
+        dof = np.asarray(entry["dof_pos"], dtype=np.float64)[frame]
+        qpos[0:3] = root_pos
+        qpos[3:7] = np.roll(quat_xyzw, 1)  # xyzw -> wxyz
+        qpos[7:] = dof
+        data.qpos[:] = qpos
+        mujoco.mj_kinematics(model, data)
+        best_dist = float("inf")
+        best_pair: tuple[str, str] | None = None
+        for g1 in hand_geoms:
+            for g2 in hip_torso_geoms:
+                dist = mujoco.mj_geomDistance(model, data, g1, g2, 1.0, None)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_pair = (body_of(g1), body_of(g2))
+        c["clearance_m"] = float(best_dist)
+        c["clearance_pair"] = best_pair
 
 
 def find_runs(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -181,6 +286,8 @@ def _diag(c: dict[str, Any]) -> dict[str, Any]:
         "height_m": round(c["height_m"], 4),
         "tilt_deg": round(c["tilt_deg"], 3),
         "speed_rad_s": round(c["speed_rad_s"], 4),
+        "clearance_m": round(c["clearance_m"], 4),
+        "clearance_pair": list(c["clearance_pair"]) if c["clearance_pair"] else None,
         "quiet_run_frames_30fps": [c["run_start"], c["run_end"]],
         "source_frame_30fps": c["frame"],
     }
@@ -244,6 +351,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-run-frames", type=int, default=15, help="Minimum consecutive quiet frames (at the motion's native fps) to keep a run.")
     parser.add_argument("--num-standing", type=int, default=5)
     parser.add_argument(
+        "--min-clearance",
+        type=float,
+        default=DEFAULT_MIN_CLEARANCE,
+        help=(
+            "Minimum MuJoCo mj_geomDistance (meters) between hand-link and hip/torso collision "
+            "geoms at a candidate's center frame; candidates below this are dropped. See module "
+            "docstring for the empirical-gap justification of the default."
+        ),
+    )
+    parser.add_argument(
         "--sim-dt",
         type=float,
         default=0.02,
@@ -297,6 +414,23 @@ def main() -> None:
         sim_dt=args.sim_dt,
     )
     print(f"[INFO] Found {len(candidates)} quiet-standing runs (>= {args.min_run_frames} frames) across the dataset")
+
+    xml_path = Path(training_spec.robot.xml_path)
+    compute_arm_clearance(motion_data, candidates, xml_path=xml_path)
+    clearances = np.array([c["clearance_m"] for c in candidates])
+    print(f"[INFO] Arm/hand-vs-hip/torso clearance ({xml_path}): "
+          f"min={clearances.min():.4f} median={np.median(clearances):.4f} max={clearances.max():.4f}")
+    print("[INFO] Survival by clearance threshold (audit table):")
+    for t in sorted(set(CLEARANCE_REPORT_THRESHOLDS) | {args.min_clearance}):
+        n = int((clearances >= t).sum())
+        marker = "  <-- selected" if t == args.min_clearance else ""
+        print(f"    >= {t:.3f} m: {n:3d}/{len(candidates)} runs survive{marker}")
+
+    candidates = [c for c in candidates if c["clearance_m"] >= args.min_clearance]
+    if not candidates:
+        raise RuntimeError(f"No candidates survive --min-clearance={args.min_clearance}; lower it.")
+    print(f"[INFO] {len(candidates)} candidates survive --min-clearance={args.min_clearance} m "
+          f"(dropped {len(clearances) - len(candidates)} for hand/hip contact risk)")
 
     entries = build_goal_entries(candidates, num_standing=args.num_standing)
     if not entries:

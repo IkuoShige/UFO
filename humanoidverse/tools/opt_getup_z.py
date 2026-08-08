@@ -34,6 +34,7 @@ import json
 import math
 import os
 import time
+import zlib
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -853,7 +854,7 @@ def cmd_final(args) -> None:
 
     for tier in args.final_tiers:
         ctx, meta = make_ctx(args, model, model_folder, data_path, robot_config, tier=tier,
-                             num_envs=num_envs, want_checker=(tier == "nominal"))
+                             num_envs=num_envs, want_checker=(tier in ("nominal", "dr")))
         al, ol = latency_for(tier)
         roll_cfg = RolloutConfig(settle_steps=50, episode_steps=args.final_steps,
                                  action_latency_max=al, obs_latency_max=ol, record_qpos=True)
@@ -862,10 +863,13 @@ def cmd_final(args) -> None:
             key = f"{tier}:{cname}"
             t0 = time.time()
             res = evaluate_population(ctx, z_pop, pose_cfg=pose_cfg, roll_cfg=roll_cfg,
-                                      seed_key=[args.final_seed, hash(cname) % 9973],
+                                      # crc32, not hash(): Python's string hash is salted per
+                                      # process, which would make the pose banks irreproducible.
+                                      seed_key=[args.final_seed, int(zlib.crc32(cname.encode()) % 9973)],
                                       batches=args.final_batches,
-                                      self_collision=(tier == "nominal"), collision_stride=10)
-            results["conditions"][key] = {"meta": meta, "results": dict(zip(names, res))}
+                                      self_collision=(tier in ("nominal", "dr")), collision_stride=10)
+            results["conditions"][key] = {"meta": meta, "results": dict(zip(names, res)),
+                                          "self_collision_pairs": dict(ctx.last_pairs)}
             _print_table(f"{key} ({time.time()-t0:.0f}s)", names, res,
                          ["success", "success_upright", "rose", "tts", "handoff_rms",
                           "handoff_knee", "self_collision", "min_final_root_height"])
