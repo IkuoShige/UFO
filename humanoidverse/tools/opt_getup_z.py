@@ -1,0 +1,1065 @@
+"""Direct search for the best get-up latent ``z`` of a frozen UFO BFM (workstream E).
+
+WS-A enumerated hand-derived candidates and the winner (``standing_pooled``) saturates
+nominal success. This tool optimizes the axes that are *not* saturated -- robustness under
+domain randomization, time-to-stand, and terminal-pose distance to the walk hand-off pose --
+by searching directly over the latent sphere with CEM.
+
+Everything simulation-side is reused from ``humanoidverse.tools.eval_getup``: env construction,
+fallen-pose banks, the rollout loop, the standing criterion, the scorer, the hand-off metric and
+the offline self-collision checker. What is added here is only:
+
+  ``TiledPoseBank``       one set of initial conditions, tiled across candidate env-blocks, with
+                          each copy re-offset onto its own env origin (mjlab shares one world).
+  ``PopulationZ``         a ZProvider that gives env-block ``g`` candidate ``g``'s latent, so a
+                          whole CEM population is evaluated in a single batched rollout under
+                          *identical* initial conditions (common random numbers).
+  ``scan_motion_z``       one pass over the motion library that pools (a) a crouch latent from
+                          the dataset frames closest to the walk hand-off leg pose, and (b) the
+                          principal directions of the backward-encoder output over upright frames.
+  ``cem_search``          CEM over a low-dimensional subspace of the z-sphere.
+  ``final_eval``          full-fidelity re-evaluation of finalists over search + held-out conditions.
+
+Subcommands::
+
+    uv run python -m humanoidverse.tools.opt_getup_z probe   --out-dir runs/getup_opt
+    uv run python -m humanoidverse.tools.opt_getup_z search  --out-dir runs/getup_opt
+    uv run python -m humanoidverse.tools.opt_getup_z final   --out-dir runs/getup_opt
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import time
+from dataclasses import dataclass, asdict, field
+from pathlib import Path
+from typing import Any, Sequence
+
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+import numpy as np
+import torch
+
+from humanoidverse.agents.load_utils import load_model_from_checkpoint_dir
+from humanoidverse.mjlab_inference_utils import checkpoint_load_device, resolve_inference_robot_config
+from humanoidverse.tools.eval_getup import (
+    DEFAULT_DATA_PATH,
+    DEFAULT_ROBOT_CONFIG,
+    PROJECT_ROOT,
+    WALK_HANDOFF_TARGET,
+    FallenPoseBank,
+    MotionZSource,
+    PoseBankConfig,
+    RolloutConfig,
+    SelfCollisionChecker,
+    StandCriterion,
+    ZProvider,
+    add_handoff_metrics,
+    build_eval_env,
+    build_z_provider,
+    rollout,
+    score_getup,
+)
+from humanoidverse.utils.robot_spec import load_robot_training_spec
+
+# ``domain_rand.*`` hydra overrides. The search tier drops the *startup* physics draws
+# (friction / link mass / torso COM / default-pose offset): those are fixed per env for the
+# whole run, so with one candidate per env-block they would bias every candidate by a constant.
+# WS-A's ablation measured physics-only DR at 100% strict success, so nothing is lost.
+NO_STARTUP_PHYSICS = (
+    "domain_rand.randomize_friction=False",
+    "domain_rand.randomize_link_mass=False",
+    "domain_rand.randomize_base_com=False",
+    "domain_rand.randomize_default_dof_pos=False",
+)
+STRESS_PUSH = ("domain_rand.max_push_vel_xy=1.5", "domain_rand.max_push_ang_vel=1.5")
+
+SEED_SPECS: list[dict[str, Any]] = [
+    {"name": "standing_pooled", "type": "constant",
+     "source": {"kind": "motion_standing_mean", "motion_ids": [16, 17, 55, 65]}},
+    {"name": "reward_move_ego_0_0", "type": "constant",
+     "source": {"kind": "file", "path": "runs/ufo_fb_k1_5090_v2/reward_inference/reward_locomotion.pkl",
+                "key": "move-ego-0-0"}},
+    {"name": "goal_standing_canonical", "type": "constant",
+     "source": {"kind": "file", "path": "runs/getup_eval/z_goal_standing.pt"}},
+    {"name": "goal_sprint1_stand", "type": "constant",
+     "source": {"kind": "file", "path": "runs/ufo_fb_k1_5090_v2/goal_inference/goal_reaching.pkl",
+                "key": "sprint1_subject2_5347"}},
+    {"name": "goal_fallAndGetUp3_stand", "type": "constant",
+     "source": {"kind": "file", "path": "runs/ufo_fb_k1_5090_v2/goal_inference/goal_reaching.pkl",
+                "key": "fallAndGetUp3_subject1_1963"}},
+]
+# Optional: WS-F's arm-clearance-filtered goal latents, folded in as extra seeds if present.
+CLEARANCE_SEED_PATH = "runs/getup_eval/z_goal_clearance.pt"
+
+
+# --------------------------------------------------------------------------------------
+# paired population evaluation
+# --------------------------------------------------------------------------------------
+
+
+class TiledPoseBank:
+    """Wraps a ``FallenPoseBank`` so ``n_groups`` candidate blocks share one set of conditions.
+
+    ``sample(n)`` draws ``n // n_groups`` initial states and tiles them, so env
+    ``g * n_cond + c`` is candidate ``g`` started from condition ``c``. mjlab lays every env
+    out in one world on a 5 m grid, so each tile copy is re-offset onto its own env origin --
+    without that, all copies of a condition would be spawned on top of each other.
+    """
+
+    def __init__(self, bank: FallenPoseBank, n_groups: int):
+        self.bank = bank
+        self.n_groups = int(n_groups)
+        self.cfg = bank.cfg
+
+    def sample(self, n: int, rng: np.random.Generator):
+        if n % self.n_groups:
+            raise ValueError(f"num_envs {n} is not divisible by n_groups {self.n_groups}")
+        n_cond = n // self.n_groups
+        states, meta = self.bank.sample(n_cond, rng)
+        idx = np.tile(np.arange(n_cond), self.n_groups)
+        tidx = torch.as_tensor(idx, device=states["root_states"].device, dtype=torch.long)
+        root = states["root_states"].index_select(0, tidx).clone()
+        dof = states["dof_states"].index_select(0, tidx).clone()
+        origins = self.bank.core.env_origins[:n]
+        root[:, :3] += origins - origins.index_select(0, tidx)
+        out_meta = [dict(meta[c], cond=int(c), group=int(i // n_cond)) for i, c in enumerate(idx)]
+        return {"root_states": root, "dof_states": dof}, out_meta
+
+
+class PopulationZ(ZProvider):
+    """Constant-per-env latent: env-block ``g`` gets population member ``perm[g]``."""
+
+    mode = "population"
+
+    def __init__(self, z_pop: torch.Tensor, n_cond: int, name: str = "population"):
+        self._z = z_pop.repeat_interleave(int(n_cond), dim=0)
+        self.name = name
+
+    def z_at(self, step: int, num_envs: int) -> torch.Tensor:
+        return self._z[:num_envs]
+
+
+def _nanmean(values: Sequence[float]) -> float:
+    vals = [v for v in values if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    return float(np.mean(vals)) if vals else float("nan")
+
+
+def aggregate_group(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Per-candidate aggregate. ``success`` is WS-A's strict metric, ``success_upright`` the fixed one."""
+    ok = [r for r in rows if r["success"]]
+    risen = [r for r in rows if r["rose"]]
+    return {
+        "n": len(rows),
+        "success": float(np.mean([r["success"] for r in rows])),
+        "success_upright": float(np.mean([r["success_upright"] for r in rows])),
+        "rose": float(np.mean([r["rose"] for r in rows])),
+        "fell_back": float(np.mean([r["fell_back"] for r in rows])),
+        "refell": float(np.mean([r["refell"] for r in rows])),
+        "tts": _nanmean([r["time_to_stand_s"] for r in ok]),
+        "time_to_rise": _nanmean([r["time_to_rise_s"] for r in risen]),
+        "handoff_rms": _nanmean([r.get("handoff_rms_delta") for r in rows]),
+        "handoff_knee": _nanmean([r.get("handoff_knee_delta") for r in rows]),
+        "handoff_max": _nanmean([r.get("handoff_max_abs_delta") for r in rows]),
+        "self_collision": _nanmean([r.get("self_collision_frac") for r in rows]),
+        "final_root_height": _nanmean([r["final_root_height"] for r in rows]),
+        "min_final_root_height": (
+            float(np.min([r["final_root_height"] for r in rows])) if rows else float("nan")
+        ),
+        "hold_max_tilt": _nanmean([r["hold_max_tilt_deg"] for r in ok]),
+        "peak_torque_ratio": _nanmean([r["peak_torque_ratio"] for r in rows]),
+        "torque_saturation": _nanmean([r["torque_saturation_frac"] for r in rows]),
+        "undesired_contact": _nanmean([r["undesired_contact_frac"] for r in rows]),
+        "frac_feet_ok": _nanmean([r["frac_feet_ok"] for r in rows]),
+        **{
+            f"pose_{j}": _nanmean([r.get(f"pose_{j}") for r in rows])
+            for j in WALK_HANDOFF_TARGET
+        },
+        # Per-episode values, kept so a *paired* difference against the champion (which was
+        # rolled out from the identical initial conditions) can be computed downstream.
+        "_ep_success": [float(r["success"]) for r in rows],
+        "_ep_success_upright": [float(r["success_upright"]) for r in rows],
+        "_ep_tts": [float(r["time_to_stand_s"]) for r in rows],
+        "_ep_handoff_rms": [float(r.get("handoff_rms_delta", float("nan"))) for r in rows],
+    }
+
+
+@dataclass
+class EvalContext:
+    wrapped_env: Any
+    core: Any
+    model: Any
+    crit: StandCriterion
+    effort_limits: np.ndarray
+    checker: SelfCollisionChecker | None
+    use_root_height_obs: bool = False
+    last_pairs: dict[str, int] = field(default_factory=dict)
+    n_rollouts: int = 0
+    n_episodes: int = 0
+
+
+def evaluate_population(
+    ctx: EvalContext,
+    z_pop: torch.Tensor,
+    *,
+    pose_cfg: PoseBankConfig,
+    roll_cfg: RolloutConfig,
+    seed_key: Sequence[int],
+    batches: int = 1,
+    self_collision: bool = False,
+    collision_stride: int = 10,
+) -> list[dict[str, Any]]:
+    """Rollout the whole population in one batched env and return per-candidate aggregates."""
+    core = ctx.core
+    n_pop = int(z_pop.shape[0])
+    if core.num_envs % n_pop:
+        raise ValueError(f"num_envs {core.num_envs} not divisible by population {n_pop}")
+    n_cond = core.num_envs // n_pop
+    bank = TiledPoseBank(FallenPoseBank(core, pose_cfg), n_groups=n_pop)
+    per_cand: list[list[dict[str, Any]]] = [[] for _ in range(n_pop)]
+
+    for b in range(batches):
+        # Rotate which env-block holds which candidate, so any residual per-env asymmetry
+        # (push draws, leftover physics state) is not tied to a fixed candidate.
+        perm = np.roll(np.arange(n_pop), b)
+        provider = PopulationZ(z_pop[torch.as_tensor(perm.copy(), device=z_pop.device)], n_cond)
+        rng = np.random.default_rng(list(seed_key) + [b])
+        traj = rollout(
+            ctx.wrapped_env, core, ctx.model,
+            z_provider=provider, pose_bank=bank, cfg=roll_cfg, rng=rng,
+            device=str(core.device), latency_tile=n_cond,
+        )
+        ctx.n_rollouts += 1
+        ctx.n_episodes += core.num_envs
+        rows = score_getup(traj, ctx.crit, ctx.effort_limits)
+        add_handoff_metrics(traj, rows, core.dof_names, hold_s=ctx.crit.hold_s)
+        if self_collision and ctx.checker is not None and traj.qpos is not None:
+            ctx.checker.pair_counts = {}
+            stats = ctx.checker.analyze(traj.qpos, stride=collision_stride)
+            ctx.last_pairs = {"|".join(k): int(v) for k, v in
+                              sorted(ctx.checker.pair_counts.items(), key=lambda kv: -kv[1])[:4]}
+            for i, r in enumerate(rows):
+                for key, values in stats.items():
+                    r[key] = float(values[i])
+        for i, r in enumerate(rows):
+            per_cand[int(perm[i // n_cond])].append(r)
+    return [aggregate_group(rows) for rows in per_cand]
+
+
+# --------------------------------------------------------------------------------------
+# objective
+# --------------------------------------------------------------------------------------
+
+
+@dataclass
+class ObjectiveWeights:
+    w_nominal_success: float = 100.0   # guard: must still get up and hold a stance with no DR
+    w_dr_upright: float = 100.0        # the *fixed* DR metric (upright stance, stepping allowed)
+    w_speed: float = 25.0
+    speed_ref_s: float = 1.5
+    w_handoff: float = 50.0
+    handoff_ref_rad: float = 0.35
+    self_collision_free: float = 0.05  # no penalty below this
+    self_collision_penalty: float = 200.0
+    self_collision_dq: float = 0.50    # WS-A's disqualification threshold
+    dq_penalty: float = 1000.0
+
+
+def composite(nom: dict[str, Any], dr: dict[str, Any] | None, w: ObjectiveWeights) -> float:
+    """Documented, arbitrary composite over the *unsaturated* axes. Higher is better."""
+    j = w.w_nominal_success * float(nom["success"])
+    if dr is not None:
+        j += w.w_dr_upright * float(dr["success_upright"])
+    tts = nom["tts"]
+    if not (isinstance(tts, float) and math.isnan(tts)):
+        j += w.w_speed * max(0.0, 1.0 - tts / w.speed_ref_s)
+    hr = nom["handoff_rms"]
+    if not (isinstance(hr, float) and math.isnan(hr)):
+        j += w.w_handoff * max(0.0, 1.0 - hr / w.handoff_ref_rad)
+    sc = nom.get("self_collision")
+    if sc is not None and not (isinstance(sc, float) and math.isnan(sc)):
+        j -= w.self_collision_penalty * max(0.0, sc - w.self_collision_free)
+        if sc > w.self_collision_dq:
+            j -= w.dq_penalty
+    return float(j)
+
+
+# --------------------------------------------------------------------------------------
+# z sources: crouch pooling + principal directions
+# --------------------------------------------------------------------------------------
+
+
+@torch.no_grad()
+def scan_motion_z(core, model, motion_src: MotionZSource, *, device: str,
+                  keep_rms: float = 0.16, n_pca: int = 8) -> dict[str, Any]:
+    """One pass over every motion: pool a crouch latent and the principal standing directions.
+
+    For each frame of every clip (at env dt, index-aligned with the backward-encoder output)
+    we measure the leg pose's RMS distance to ``WALK_HANDOFF_TARGET``. Frames that are upright
+    and slow feed a running covariance (-> principal directions of the *standing* latent
+    manifold); the frames closest to the hand-off pose are kept and pooled into a crouch latent.
+    This is the direct test of "is the hand-off pose reachable in z-space at all?".
+    """
+    lib = core._motion_lib
+    dt = float(core.dt)
+    names = list(core.dof_names)
+    leg = [j for j in WALK_HANDOFF_TARGET if j in names]
+    leg_idx = [names.index(j) for j in leg]
+    tgt = torch.tensor([WALK_HANDOFF_TARGET[j] for j in leg], device=device)
+
+    d = int(model.cfg.archi.z_dim)
+    ssum = torch.zeros(d, dtype=torch.float64, device=device)
+    scov = torch.zeros((d, d), dtype=torch.float64, device=device)
+    n_up = 0
+    kept_z: list[torch.Tensor] = []
+    kept_rms: list[torch.Tensor] = []
+    all_rms: list[np.ndarray] = []
+
+    for mid in range(int(lib._num_unique_motions)):
+        n = int(math.ceil(float(lib._motion_lengths[mid]) / dt))
+        times = torch.arange(n, device=device, dtype=torch.float32) * dt
+        ids = torch.full((n,), mid, device=device, dtype=torch.long)
+        res = lib.get_motion_state(ids, times)
+        # z[k] corresponds to motion time (k+1)*dt (see MotionZSource.z_sequence).
+        h = res["root_pos"][:, 2][1:]
+        v = torch.norm(res["root_vel"][:, :2], dim=-1)[1:]
+        legpose = res["dof_pos"][1:][:, leg_idx]
+        rms = torch.sqrt(((legpose - tgt) ** 2).mean(dim=1))
+        z = motion_src.z_sequence(mid)
+        k = min(int(z.shape[0]), int(h.shape[0]))
+        h, v, rms, z = h[:k], v[:k], rms[:k], z[:k]
+        up = (h > 0.42) & (v < 0.30)
+        if bool(up.any()):
+            zu = z[up].double()
+            ssum += zu.sum(dim=0)
+            scov += zu.T @ zu
+            n_up += int(zu.shape[0])
+            all_rms.append(rms[up].cpu().numpy())
+            close = up & (rms < keep_rms)
+            if bool(close.any()):
+                kept_z.append(z[close].cpu())
+                kept_rms.append(rms[close].cpu())
+        motion_src._z_cache.clear()
+        del res
+
+    if not kept_z:
+        raise RuntimeError("No dataset frame lands within keep_rms of the hand-off pose")
+    KZ = torch.cat(kept_z)
+    KR = torch.cat(kept_rms)
+    order = torch.argsort(KR)
+    mean = (ssum / n_up).float()
+    cov = (scov / n_up - torch.outer(ssum / n_up, ssum / n_up)).float()
+    evals, evecs = torch.linalg.eigh(cov)
+    comps = evecs[:, -n_pca:].T.contiguous()  # (n_pca, d), largest variance last
+    rms_all = np.concatenate(all_rms)
+
+    pooled = {}
+    for topn in (100, 500, 2000):
+        take = order[: min(topn, order.numel())]
+        pooled[f"handoff_pool_{topn}"] = model.project_z(KZ[take].to(device).mean(dim=0, keepdim=True))[0]
+    pooled["standing_mean_all"] = model.project_z(mean.unsqueeze(0).to(device))[0]
+    return {
+        "pooled": pooled,
+        "pca": comps,
+        "n_upright_frames": n_up,
+        "n_kept": int(KZ.shape[0]),
+        "rms_percentiles": {
+            str(p): float(np.percentile(rms_all, p)) for p in (0, 1, 5, 25, 50)
+        },
+        "kept_rms_min": float(KR.min()),
+        "pooled_frame_rms": {
+            f"handoff_pool_{topn}": float(KR[order[: min(topn, order.numel())]].mean())
+            for topn in (100, 500, 2000)
+        },
+    }
+
+
+def build_subspace(seed_z: dict[str, torch.Tensor], pca: torch.Tensor, *, n_pca: int, tol: float = 1e-4):
+    """Orthonormal basis (d, k) spanning the seed latents plus the top principal directions."""
+    rows = [z.reshape(1, -1) for z in seed_z.values()]
+    rows.append(pca[-n_pca:] if n_pca else pca[:0])
+    M = torch.cat(rows, dim=0).double()
+    U, S, Vh = torch.linalg.svd(M, full_matrices=False)
+    keep = int((S > tol * S[0]).sum())
+    return Vh[:keep].T.float().contiguous()  # (d, k)
+
+
+# --------------------------------------------------------------------------------------
+# CEM
+# --------------------------------------------------------------------------------------
+
+
+@dataclass
+class SearchConfig:
+    population: int = 12
+    n_cond: int = 12
+    elite: int = 4
+    iterations: int = 20
+    theta0: float = 0.35          # initial angular std of the population, radians
+    sigma_floor: float = 0.02
+    sigma_smooth: float = 0.6
+    episode_steps: int = 300
+    settle_steps: int = 50
+    n_pca: int = 8
+    seed: int = 1000
+    search_motion_pool_parity: int = 0   # in-dist bank draws only motions with this parity
+    holdout_motion_pool_parity: int = 1
+
+
+def warm_start_population(seed_coords: dict[str, torch.Tensor], population: int
+                          ) -> tuple[torch.Tensor, list[str]]:
+    """Iteration -1: sweep the great circles that connect the champion to the crouch latent.
+
+    The champion and the hand-off-pooled latent are 1.32 rad apart on the z-sphere, far
+    outside any sane CEM step, so a Gaussian search seeded at the champion would never see
+    the crouch region. This sweep maps the arc between them (and so the self-collision /
+    hand-off-distance trade-off along it) and hands CEM its starting point.
+    """
+    champ = "standing_pooled"
+    members: list[tuple[str, torch.Tensor]] = [(champ, seed_coords[champ])]
+    plan: list[tuple[str, str, tuple[float, ...]]] = [
+        (champ, "handoff_pool_500", (0.2, 0.35, 0.5, 0.65, 0.8, 1.0)),
+        ("standing_mean_all", "handoff_pool_500", (0.35, 0.5, 0.65)),
+    ]
+    for a, b, ts in plan:
+        if a not in seed_coords or b not in seed_coords:
+            continue
+        for t in ts:
+            members.append((f"arc_{a[:6]}_{b[-3:]}_t{t:.2f}", slerp_x(seed_coords[a], seed_coords[b], t)))
+    for extra in ("handoff_pool_100", "handoff_pool_2000"):
+        if extra in seed_coords:
+            members.append((extra, seed_coords[extra]))
+    members = members[:population]
+    while len(members) < population:  # pad with mild jitter around the crouch end
+        members.append((f"pad{len(members)}", slerp_x(seed_coords[champ], seed_coords["handoff_pool_500"],
+                                                      0.5 + 0.03 * len(members))))
+    return torch.stack([m[1] for m in members]), [m[0] for m in members]
+
+
+def _coords(basis: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+    x = basis.T @ z
+    return x / x.norm()
+
+
+def slerp_x(a: torch.Tensor, b: torch.Tensor, t: float) -> torch.Tensor:
+    """Great-circle interpolation between two unit coordinate vectors.
+
+    The basis is orthonormal, so a slerp in coordinate space is exactly a slerp on the
+    z-sphere -- the arc the FB latent actually lives on.
+    """
+    dot = float(torch.clamp((a * b).sum(), -1.0, 1.0))
+    omega = math.acos(dot)
+    if omega < 1e-6:
+        out = (1 - t) * a + t * b
+    else:
+        out = (math.sin((1 - t) * omega) * a + math.sin(t * omega) * b) / math.sin(omega)
+    return out / out.norm()
+
+
+def _to_z(model, basis: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
+    return model.project_z(X @ basis.T)
+
+
+# --------------------------------------------------------------------------------------
+# runner plumbing
+# --------------------------------------------------------------------------------------
+
+
+def make_model_and_paths(args):
+    device = args.device
+    model_folder = Path(args.model_folder).expanduser().resolve()
+    data_path = (PROJECT_ROOT / DEFAULT_DATA_PATH).resolve()
+    robot_config = resolve_inference_robot_config(PROJECT_ROOT / DEFAULT_ROBOT_CONFIG, None)
+    model = load_model_from_checkpoint_dir(model_folder / "checkpoint", device=checkpoint_load_device(device))
+    model.to(device)
+    model.eval()
+    return model, model_folder, data_path, robot_config
+
+
+def make_ctx(args, model, model_folder, data_path, robot_config, *, tier: str, num_envs: int,
+             stand_hold_s: float = 2.0, want_checker: bool = True) -> tuple[EvalContext, dict]:
+    """``tier`` is one of nominal / dr / stress (search tiers additionally drop startup physics)."""
+    overrides: list[str] = []
+    disable_dr = tier == "nominal"
+    disable_noise = tier == "nominal"
+    if tier in ("dr_search", "stress_search"):
+        overrides += list(NO_STARTUP_PHYSICS)
+    if tier in ("stress", "stress_search"):
+        overrides += list(STRESS_PUSH)
+    wrapped_env, core, env_cfg, use_root_height_obs = build_eval_env(
+        model_folder=model_folder, data_path=data_path, robot_config=robot_config,
+        device=args.device, num_envs=num_envs, disable_dr=disable_dr,
+        disable_obs_noise=disable_noise, seed=args.seed, hydra_overrides=overrides or None,
+    )
+    robot_training = load_robot_training_spec(robot_config)
+    checker = (
+        SelfCollisionChecker(Path(robot_training.robot.xml_path).expanduser().resolve(),
+                             expected_nq=7 + core.num_dof)
+        if want_checker else None
+    )
+    ctx = EvalContext(
+        wrapped_env=wrapped_env, core=core, model=model,
+        crit=StandCriterion(hold_s=stand_hold_s),
+        effort_limits=core.torque_limits.cpu().numpy(), checker=checker,
+        use_root_height_obs=bool(use_root_height_obs),
+    )
+    meta = {"tier": tier, "overrides": overrides, "disable_dr": disable_dr,
+            "disable_obs_noise": disable_noise, "num_envs": num_envs}
+    return ctx, meta
+
+
+def latency_for(tier: str) -> tuple[int, int]:
+    return (0, 0) if tier == "nominal" else (2, 1)
+
+
+def seed_latents(model, motion_src, device: str) -> dict[str, torch.Tensor]:
+    out: dict[str, torch.Tensor] = {}
+    for spec in SEED_SPECS:
+        provider = build_z_provider(spec, model=model, motion_src=motion_src, device=device)
+        out[spec["name"]] = provider.representative_z().to(device)
+    clearance = PROJECT_ROOT / CLEARANCE_SEED_PATH
+    if clearance.exists():  # WS-F, folded in if it landed
+        blob = torch.load(clearance, map_location=device, weights_only=False)
+        entries = blob.get("z", blob) if isinstance(blob, dict) else {}
+        for name, value in (entries.items() if isinstance(entries, dict) else []):
+            z = value["z"] if isinstance(value, dict) and "z" in value else value
+            z = torch.as_tensor(np.asarray(z), dtype=torch.float32, device=device).reshape(-1)
+            if z.numel() == int(model.cfg.archi.z_dim):
+                out[f"wsf_{name}"] = model.project_z(z.unsqueeze(0))[0]
+    return out
+
+
+def gpu_mem_gb() -> float:
+    try:
+        free, total = torch.cuda.mem_get_info()
+        return (total - free) / 1024 ** 3
+    except Exception:
+        return float("nan")
+
+
+def cache_path(out_dir: Path) -> Path:
+    return out_dir / "z_sources.pt"
+
+
+def load_or_build_sources(args, model, out_dir: Path, motion_src, device: str, n_pca: int) -> dict[str, Any]:
+    path = cache_path(out_dir)
+    if path.exists() and not args.rescan:
+        blob = torch.load(path, map_location=device, weights_only=False)
+        print(f"[INFO] loaded z sources from {path}")
+        return blob
+    print("[INFO] scanning motion library for crouch frames + standing principal directions ...")
+    t0 = time.time()
+    scan = scan_motion_z(motion_src.core, model, motion_src, device=device, n_pca=max(n_pca, 8))
+    seeds = seed_latents(model, motion_src, device)
+    blob = {"scan": {k: v for k, v in scan.items() if k not in ("pooled", "pca")},
+            "pooled": {k: v.cpu() for k, v in scan["pooled"].items()},
+            "pca": scan["pca"].cpu(), "seeds": {k: v.cpu() for k, v in seeds.items()}}
+    torch.save(blob, path)
+    print(f"[INFO] scan done in {time.time() - t0:.0f}s -> {path}")
+    return blob
+
+
+def _named_population(blob: dict[str, Any], device: str) -> dict[str, torch.Tensor]:
+    out = {k: v.to(device) for k, v in blob["seeds"].items()}
+    out.update({k: v.to(device) for k, v in blob["pooled"].items()})
+    return out
+
+
+def _print_table(title: str, names: Sequence[str], results: Sequence[dict[str, Any]], keys: Sequence[str]) -> None:
+    print(f"\n=== {title} ===")
+    print("candidate".ljust(26) + "".join(k.rjust(15) for k in keys))
+    for name, r in zip(names, results):
+        cells = []
+        for k in keys:
+            v = r.get(k, float("nan"))
+            cells.append((f"{v:.3f}" if isinstance(v, float) else str(v)).rjust(15))
+        print(name.ljust(26) + "".join(cells))
+
+
+# --------------------------------------------------------------------------------------
+# subcommand: probe
+# --------------------------------------------------------------------------------------
+
+
+def cmd_probe(args) -> None:
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    model, model_folder, data_path, robot_config = make_model_and_paths(args)
+    device = args.device
+    n_cond = args.probe_cond
+
+    report: dict[str, Any] = {"conditions": {}}
+    blob = None
+    names: list[str] = []
+    z_pop = None
+    ctx_nom = None
+
+    for tier in ("nominal", "dr_search", "stress_search"):
+        n_pop = len(names) if names else None
+        num_envs = (n_pop or 9) * n_cond
+        ctx, meta = make_ctx(args, model, model_folder, data_path, robot_config,
+                             tier=tier, num_envs=num_envs, want_checker=(tier == "nominal"))
+        if blob is None:
+            motion_src = MotionZSource(ctx.core, model, use_root_height_obs=ctx.use_root_height_obs, device=device)
+            blob = load_or_build_sources(args, model, out_dir, motion_src, device, args.n_pca)
+            pop = _named_population(blob, device)
+            names = list(pop)
+            z_pop = torch.stack([pop[n] for n in names])
+            report["scan"] = blob["scan"]
+            print(json.dumps(blob["scan"], indent=2))
+            if ctx.core.num_envs != len(names) * n_cond:
+                ctx.wrapped_env.close()
+                ctx, meta = make_ctx(args, model, model_folder, data_path, robot_config,
+                                     tier=tier, num_envs=len(names) * n_cond, want_checker=True)
+        al, ol = latency_for(tier)
+        roll_cfg = RolloutConfig(settle_steps=50, episode_steps=args.probe_steps,
+                                 action_latency_max=al, obs_latency_max=ol, record_qpos=True)
+        pose_cfg = PoseBankConfig(bucket="indist", motion_pool=[m for m in range(77) if m % 2 == 0])
+        t0 = time.time()
+        res = evaluate_population(ctx, z_pop, pose_cfg=pose_cfg, roll_cfg=roll_cfg,
+                                  seed_key=[args.seed, 0], batches=args.probe_batches,
+                                  self_collision=(tier == "nominal"), collision_stride=10)
+        print(f"[INFO] tier={tier} {ctx.n_rollouts} rollouts in {time.time() - t0:.0f}s, "
+              f"gpu={gpu_mem_gb():.1f} GB")
+        _print_table(f"probe {tier}", names, res,
+                     ["success", "success_upright", "tts", "handoff_rms", "handoff_knee",
+                      "self_collision", "final_root_height"])
+        report["conditions"][tier] = {"meta": meta, "results": dict(zip(names, res))}
+        (out_dir / "probe.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
+        if tier == "nominal" and args.probe_dual_env:
+            ctx_nom = ctx  # keep alive to test two concurrent envs
+            continue
+        ctx.wrapped_env.close()
+        if ctx_nom is not None:
+            print(f"[INFO] two concurrent envs OK, gpu={gpu_mem_gb():.1f} GB")
+            ctx_nom.wrapped_env.close()
+            ctx_nom = None
+    print(f"[INFO] probe report -> {out_dir / 'probe.json'}")
+
+
+# --------------------------------------------------------------------------------------
+# subcommand: search
+# --------------------------------------------------------------------------------------
+
+
+def cmd_search(args) -> None:
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scfg = SearchConfig(population=args.population, n_cond=args.n_cond, elite=args.elite,
+                        iterations=args.iterations, theta0=args.theta0,
+                        episode_steps=args.episode_steps, n_pca=args.n_pca, seed=args.seed)
+    weights = ObjectiveWeights()
+    model, model_folder, data_path, robot_config = make_model_and_paths(args)
+    device = args.device
+    num_envs = scfg.population * scfg.n_cond
+
+    ctx_nom, meta_nom = make_ctx(args, model, model_folder, data_path, robot_config,
+                                 tier="nominal", num_envs=num_envs, want_checker=True)
+    motion_src = MotionZSource(ctx_nom.core, model, use_root_height_obs=ctx_nom.use_root_height_obs, device=device)
+    blob = load_or_build_sources(args, model, out_dir, motion_src, device, scfg.n_pca)
+    pop_named = _named_population(blob, device)
+    ctx_dr, meta_dr = make_ctx(args, model, model_folder, data_path, robot_config,
+                               tier="stress_search", num_envs=num_envs, want_checker=False)
+    print(f"[INFO] two envs built, gpu={gpu_mem_gb():.1f} GB")
+
+    basis = build_subspace(pop_named, blob["pca"].to(device), n_pca=scfg.n_pca)
+    k = int(basis.shape[1])
+    seed_coords = {n: _coords(basis, z) for n, z in pop_named.items()}
+    champ = "standing_pooled"
+    recon = torch.stack([
+        torch.nn.functional.cosine_similarity(
+            model.project_z((seed_coords[n] @ basis.T).unsqueeze(0))[0].unsqueeze(0),
+            pop_named[n].unsqueeze(0)).squeeze()
+        for n in pop_named
+    ])
+    print(f"[INFO] subspace dim k={k}; seed reconstruction cosine min={recon.min():.6f}")
+    ang = {n: float(torch.arccos(torch.clamp((seed_coords[champ] * v).sum(), -1, 1)))
+           for n, v in seed_coords.items()}
+    print("[INFO] angle to champion (rad): " + ", ".join(f"{n}={a:.2f}" for n, a in ang.items()))
+
+    mean = seed_coords[champ].clone()
+    sigma = torch.full((k,), scfg.theta0 / math.sqrt(k), device=device)
+    rng = np.random.default_rng(scfg.seed)
+    gen = torch.Generator(device=device).manual_seed(scfg.seed)
+    trace: list[dict[str, Any]] = []
+    hall: list[dict[str, Any]] = []
+    search_pool = [m for m in range(int(ctx_nom.core._motion_lib._num_unique_motions))
+                   if m % 2 == scfg.search_motion_pool_parity]
+    al, ol = latency_for("stress_search")
+    roll_nom = RolloutConfig(settle_steps=scfg.settle_steps, episode_steps=scfg.episode_steps,
+                             action_latency_max=0, obs_latency_max=0, record_qpos=True)
+    roll_dr = RolloutConfig(settle_steps=scfg.settle_steps, episode_steps=scfg.episode_steps,
+                            action_latency_max=al, obs_latency_max=ol, record_qpos=True)
+    t_start = time.time()
+
+    for it in range(-1, scfg.iterations):
+        if it < 0:
+            X, labels = warm_start_population(seed_coords, scfg.population)
+        else:
+            n_sample = scfg.population - 2
+            noise = torch.randn((n_sample, k), generator=gen, device=device)
+            X = mean.unsqueeze(0) + sigma.unsqueeze(0) * noise
+            X = X / X.norm(dim=1, keepdim=True)
+            X = torch.cat([seed_coords[champ].unsqueeze(0), mean.unsqueeze(0), X], dim=0)
+            labels = [champ, f"mean_it{it}"] + [f"s{it}_{i}" for i in range(n_sample)]
+        z_pop = _to_z(model, basis, X)
+
+        bucket = "indist" if (it + 1) % 2 == 0 else "ood"
+        pose_cfg = PoseBankConfig(bucket=bucket, motion_pool=search_pool,
+                                  ood_yaws=8, ood_drop_height=0.30)
+        nom = evaluate_population(ctx_nom, z_pop, pose_cfg=pose_cfg, roll_cfg=roll_nom,
+                                  seed_key=[scfg.seed, it, 0], batches=1,
+                                  self_collision=True, collision_stride=10)
+        dr = evaluate_population(ctx_dr, z_pop, pose_cfg=pose_cfg, roll_cfg=roll_dr,
+                                 seed_key=[scfg.seed, it, 1], batches=1, self_collision=False)
+        J = np.array([composite(n, d, weights) for n, d in zip(nom, dr)])
+        j_champ = float(J[labels.index(champ)]) if champ in labels else float("nan")
+        order = np.argsort(-J)
+        elites = order[: scfg.elite]
+
+        for i in range(len(labels)):
+            hall.append({"label": labels[i], "iteration": it, "bucket": bucket,
+                         "J": float(J[i]), "dJ": float(J[i] - j_champ),
+                         "x": X[i].detach().cpu().tolist(),
+                         "nominal": nom[i], "stress_dr": dr[i]})
+        best = int(order[0])
+        if it < 0:
+            # Warm start: jump the CEM mean straight to the best point on the swept arcs.
+            mean = X[best].clone()
+        else:
+            Xe = X[torch.as_tensor(elites.copy(), device=device)]
+            new_mean = Xe.mean(dim=0)
+            mean = new_mean / new_mean.norm()
+            new_sigma = Xe.std(dim=0)
+            sigma = torch.clamp(scfg.sigma_smooth * new_sigma + (1 - scfg.sigma_smooth) * sigma,
+                                min=scfg.sigma_floor)
+        trace.append({
+            "iteration": it, "bucket": bucket, "J_champion": j_champ,
+            "J_best": float(J[best]), "best_label": labels[best],
+            "dJ_best": float(J[best] - j_champ),
+            "elites": [labels[int(i)] for i in elites],
+            "sigma_mean": float(sigma.mean()),
+            "best_nominal": nom[best], "best_stress_dr": dr[best],
+            "champion_nominal": nom[labels.index(champ)] if champ in labels else None,
+            "champion_stress_dr": dr[labels.index(champ)] if champ in labels else None,
+            "self_collision_pairs": dict(ctx_nom.last_pairs),
+        })
+        print(f"[IT {it:2d}] bucket={bucket} J_champ={j_champ:7.2f} J_best={J[best]:7.2f} "
+              f"({labels[best]}, dJ={J[best]-j_champ:+.2f}) tts={nom[best]['tts']:.2f} "
+              f"hrms={nom[best]['handoff_rms']:.3f} upr={dr[best]['success_upright']:.2f} "
+              f"sc={nom[best]['self_collision']:.3f} sigma={sigma.mean():.3f} "
+              f"[{time.time()-t_start:.0f}s]", flush=True)
+        payload = {
+            "search_config": {**asdict(scfg), "weights": asdict(weights), "subspace_dim": k,
+                              "basis_sources": list(pop_named), "num_envs": num_envs,
+                              "meta_nominal": meta_nom, "meta_dr": meta_dr,
+                              "search_motion_pool": search_pool},
+            "trace": trace, "hall": hall,
+            "mean_x": mean.detach().cpu().tolist(),
+            "n_rollouts": ctx_nom.n_rollouts + ctx_dr.n_rollouts,
+            "n_episodes": ctx_nom.n_episodes + ctx_dr.n_episodes,
+            "wall_s": time.time() - t_start,
+        }
+        (out_dir / "search_trace.json").write_text(json.dumps(payload, indent=2, default=str) + "\n")
+        torch.save({"basis": basis.cpu(), "mean_x": mean.cpu(), "sigma": sigma.cpu(),
+                    "seed_coords": {n: v.cpu() for n, v in seed_coords.items()}},
+                   out_dir / "search_state.pt")
+
+    ctx_nom.wrapped_env.close()
+    ctx_dr.wrapped_env.close()
+    print(f"[INFO] search done: {ctx_nom.n_rollouts + ctx_dr.n_rollouts} rollouts, "
+          f"{ctx_nom.n_episodes + ctx_dr.n_episodes} episodes, {time.time()-t_start:.0f}s")
+
+
+# --------------------------------------------------------------------------------------
+# subcommand: final
+# --------------------------------------------------------------------------------------
+
+
+def final_conditions(n_motions: int, scfg_parity: tuple[int, int]) -> dict[str, PoseBankConfig]:
+    """Four initial-condition banks: two the search saw, two it never did.
+
+    Held-out in-distribution uses the complementary half of the motion library (the search
+    only ever drew fallen poses from one parity class); held-out OOD uses a yaw grid that is
+    12-fold instead of 8-fold, a higher drop and a randomized joint pose.
+    """
+    search_parity, holdout_parity = scfg_parity
+    return {
+        "indist_search": PoseBankConfig(bucket="indist",
+                                        motion_pool=[m for m in range(n_motions) if m % 2 == search_parity]),
+        "ood_search": PoseBankConfig(bucket="ood", ood_yaws=8, ood_drop_height=0.30, ood_joint_noise=0.0),
+        "indist_holdout": PoseBankConfig(bucket="indist",
+                                         motion_pool=[m for m in range(n_motions) if m % 2 == holdout_parity]),
+        "ood_holdout": PoseBankConfig(bucket="ood", ood_yaws=12, ood_drop_height=0.35, ood_joint_noise=0.15),
+    }
+
+
+def cmd_final(args) -> None:
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    model, model_folder, data_path, robot_config = make_model_and_paths(args)
+    device = args.device
+    payload = json.loads((out_dir / "search_trace.json").read_text())
+    state = torch.load(out_dir / "search_state.pt", map_location=device, weights_only=False)
+    blob = torch.load(cache_path(out_dir), map_location=device, weights_only=False)
+    basis = state["basis"].to(device)
+    pop_named = _named_population(blob, device)
+
+    finalists: dict[str, torch.Tensor] = {"standing_pooled": pop_named["standing_pooled"]}
+    finalists["cem_mean"] = _to_z(model, basis, state["mean_x"].to(device).unsqueeze(0))[0]
+    hall = sorted(payload["hall"], key=lambda h: -h["dJ"])
+    taken = 0
+    for h in hall:
+        if h["label"].startswith("standing_pooled") or h["label"].startswith("mean_it"):
+            continue
+        x = torch.tensor(h["x"], device=device, dtype=torch.float32).unsqueeze(0)
+        z = _to_z(model, basis, x)[0]
+        if any(float(torch.dot(z, o) / (z.norm() * o.norm())) > 0.999 for o in finalists.values()):
+            continue
+        finalists[f"cem_{h['label']}"] = z
+        taken += 1
+        if taken >= args.n_finalists:
+            break
+    for extra in args.extra_finalists:
+        if extra in pop_named:
+            finalists[extra] = pop_named[extra]
+    names = list(finalists)
+    z_pop = torch.stack([finalists[n] for n in names])
+    n_pop = len(names)
+    num_envs = n_pop * args.final_cond
+    print(f"[INFO] finalists ({n_pop}): {names}; num_envs={num_envs} "
+          f"({args.final_cond} conditions x {args.final_batches} batches)")
+
+    results: dict[str, Any] = {"finalists": names, "conditions": {}}
+    res_path = out_dir / "final_results.json"
+    parity = (payload["search_config"]["search_motion_pool_parity"],
+              payload["search_config"]["holdout_motion_pool_parity"])
+
+    for tier in args.final_tiers:
+        ctx, meta = make_ctx(args, model, model_folder, data_path, robot_config, tier=tier,
+                             num_envs=num_envs, want_checker=(tier == "nominal"))
+        al, ol = latency_for(tier)
+        roll_cfg = RolloutConfig(settle_steps=50, episode_steps=args.final_steps,
+                                 action_latency_max=al, obs_latency_max=ol, record_qpos=True)
+        conds = final_conditions(int(ctx.core._motion_lib._num_unique_motions), parity)
+        for cname, pose_cfg in conds.items():
+            key = f"{tier}:{cname}"
+            t0 = time.time()
+            res = evaluate_population(ctx, z_pop, pose_cfg=pose_cfg, roll_cfg=roll_cfg,
+                                      seed_key=[args.final_seed, hash(cname) % 9973],
+                                      batches=args.final_batches,
+                                      self_collision=(tier == "nominal"), collision_stride=10)
+            results["conditions"][key] = {"meta": meta, "results": dict(zip(names, res))}
+            _print_table(f"{key} ({time.time()-t0:.0f}s)", names, res,
+                         ["success", "success_upright", "rose", "tts", "handoff_rms",
+                          "handoff_knee", "self_collision", "min_final_root_height"])
+            results["n_rollouts"] = ctx.n_rollouts
+            res_path.write_text(json.dumps(results, indent=2, default=str) + "\n")
+        ctx.wrapped_env.close()
+
+    torch.save({n: finalists[n].cpu() for n in names}, out_dir / "finalist_z.pt")
+    print(f"[INFO] wrote {res_path} and {out_dir / 'finalist_z.pt'}")
+
+
+# --------------------------------------------------------------------------------------
+# cli
+# --------------------------------------------------------------------------------------
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("command", choices=("probe", "search", "final", "bank"))
+    p.add_argument("--model-folder", type=Path, default=PROJECT_ROOT / "runs/ufo_fb_k1_5090_v2")
+    p.add_argument("--out-dir", type=Path, default=PROJECT_ROOT / "runs/getup_opt")
+    p.add_argument("--device", default="cuda:0")
+    p.add_argument("--seed", type=int, default=1000)
+    p.add_argument("--rescan", action="store_true", default=False)
+    # probe
+    p.add_argument("--probe-cond", type=int, default=14)
+    p.add_argument("--probe-steps", type=int, default=300)
+    p.add_argument("--probe-batches", type=int, default=1)
+    p.add_argument("--probe-dual-env", action="store_true", default=True)
+    # search
+    p.add_argument("--population", type=int, default=12)
+    p.add_argument("--n-cond", type=int, default=12)
+    p.add_argument("--elite", type=int, default=4)
+    p.add_argument("--iterations", type=int, default=20)
+    p.add_argument("--theta0", type=float, default=0.35)
+    p.add_argument("--episode-steps", type=int, default=300)
+    p.add_argument("--n-pca", type=int, default=8)
+    # final
+    p.add_argument("--n-finalists", type=int, default=3)
+    p.add_argument("--extra-finalists", nargs="*", default=["handoff_pool_500"])
+    p.add_argument("--final-cond", type=int, default=21)
+    p.add_argument("--final-batches", type=int, default=3)
+    p.add_argument("--final-steps", type=int, default=500)
+    p.add_argument("--final-seed", type=int, default=7000)
+    p.add_argument("--final-tiers", nargs="*", default=["nominal", "dr", "stress"])
+    # bank
+    p.add_argument("--z-bank", type=Path, default=PROJECT_ROOT / "runs/getup_eval/z_bank.pt")
+    p.add_argument("--bank-key", default="getup_opt_ws_e")
+    p.add_argument("--bank-z", default=None, help="Finalist name to store (default: rule winner).")
+    p.add_argument("--npz-out", type=Path, default=PROJECT_ROOT / "runs/getup_opt/z_bank_finalists.npz")
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    {"probe": cmd_probe, "search": cmd_search, "final": cmd_final, "bank": cmd_bank}[args.command](args)
+
+
+if __name__ == "__main__":
+    main()
+
+
+# --------------------------------------------------------------------------------------
+# subcommand: bank  (decision rule + z-bank write)
+# --------------------------------------------------------------------------------------
+
+# Pre-registered decision rule, written before the final numbers were read.
+DECISION_RULE = """Selection rule for the optimized get-up latent (WS-E), fixed before the final
+numbers were read:
+
+  0. DISQUALIFY any finalist whose in-distribution / nominal self-collision fraction > 0.50
+     (WS-A's threshold; the goal-inference latents rest their hands on their hips at ~0.93).
+  1. NO-REGRESSION GATE, evaluated on the HELD-OUT initial conditions only:
+       nominal strict success        >= champion - 0.02
+       training-DR upright stance    >= champion - 0.02
+       stress-DR   upright stance    >= champion - 0.05
+     ("upright stance" = rose and held torso height+tilt for >=95% of the final 2 s, feet
+     ignored -- the fixed DR metric; protective stepping is allowed.)
+  2. RANK survivors by the composite J (100*nominal success + 100*DR upright + 25*speed +
+     50*hand-off + self-collision penalty) averaged over the two HELD-OUT buckets.
+  3. RECOMMEND REPLACEMENT only if the winner beats the champion on held-out J, the win on at
+     least one target axis exceeds 2 paired standard errors, and tools/k1_ufo_sim2sim.py
+     (plain MuJoCo + exported ONNX) confirms it face-up and face-down. Otherwise the champion
+     stands and the optimized latent is recorded but not promoted."""
+
+
+def _paired_stats(a: Sequence[float], b: Sequence[float]) -> dict[str, float]:
+    """Mean paired difference a-b and its standard error (episodes share initial conditions)."""
+    x = np.asarray(a, dtype=float)
+    y = np.asarray(b, dtype=float)
+    n = min(x.size, y.size)
+    d = x[:n] - y[:n]
+    d = d[np.isfinite(d)]
+    if d.size < 2:
+        return {"delta": float("nan"), "se": float("nan"), "n": int(d.size)}
+    return {"delta": float(d.mean()), "se": float(d.std(ddof=1) / math.sqrt(d.size)), "n": int(d.size)}
+
+
+def cmd_bank(args) -> None:
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    results = json.loads((out_dir / "final_results.json").read_text())
+    search = json.loads((out_dir / "search_trace.json").read_text())
+    zs = torch.load(out_dir / "finalist_z.pt", map_location="cpu", weights_only=False)
+    names = results["finalists"]
+    conds = results["conditions"]
+    weights = ObjectiveWeights()
+    champ = "standing_pooled"
+
+    def get(cond: str, name: str) -> dict[str, Any] | None:
+        c = conds.get(cond)
+        return c["results"].get(name) if c else None
+
+    summary: dict[str, Any] = {}
+    for name in names:
+        row: dict[str, Any] = {"conditions": {}}
+        for cond in conds:
+            r = get(cond, name)
+            if r is None:
+                continue
+            row["conditions"][cond] = {k: v for k, v in r.items() if not k.startswith("_ep_")}
+        js = []
+        for bucket in ("indist_holdout", "ood_holdout"):
+            nom = get(f"nominal:{bucket}", name)
+            dr = get(f"dr:{bucket}", name)
+            if nom is not None:
+                js.append(composite(nom, dr, weights))
+        row["J_holdout"] = float(np.mean(js)) if js else float("nan")
+        js_s = []
+        for bucket in ("indist_search", "ood_search"):
+            nom = get(f"nominal:{bucket}", name)
+            dr = get(f"dr:{bucket}", name)
+            if nom is not None:
+                js_s.append(composite(nom, dr, weights))
+        row["J_search"] = float(np.mean(js_s)) if js_s else float("nan")
+        # paired deltas vs champion on the held-out banks
+        row["paired_vs_champion"] = {}
+        for bucket in ("indist_holdout", "ood_holdout"):
+            for tier, field in (("nominal", "_ep_handoff_rms"), ("nominal", "_ep_tts"),
+                                ("dr", "_ep_success_upright"), ("stress", "_ep_success_upright")):
+                a, b = get(f"{tier}:{bucket}", name), get(f"{tier}:{bucket}", champ)
+                if a is None or b is None or field not in a:
+                    continue
+                row["paired_vs_champion"][f"{tier}:{bucket}:{field[4:]}"] = _paired_stats(a[field], b[field])
+        summary[name] = row
+
+    # decision rule
+    cref = summary[champ]["conditions"]
+    verdicts: dict[str, Any] = {}
+    for name in names:
+        c = summary[name]["conditions"]
+        sc = c.get("nominal:indist_search", {}).get("self_collision", float("nan"))
+        reasons = []
+        if isinstance(sc, float) and sc > weights.self_collision_dq:
+            reasons.append(f"self-collision {sc:.3f} > {weights.self_collision_dq}")
+        for bucket in ("indist_holdout", "ood_holdout"):
+            for tier, key, tol in (("nominal", "success", 0.02), ("dr", "success_upright", 0.02),
+                                   ("stress", "success_upright", 0.05)):
+                k = f"{tier}:{bucket}"
+                if k in c and k in cref and c[k][key] < cref[k][key] - tol:
+                    reasons.append(f"{k}:{key} {c[k][key]:.3f} < champion {cref[k][key]:.3f} - {tol}")
+        verdicts[name] = {"disqualified": bool(reasons), "reasons": reasons,
+                          "J_holdout": summary[name]["J_holdout"], "J_search": summary[name]["J_search"]}
+
+    eligible = [n for n in names if not verdicts[n]["disqualified"]]
+    winner = max(eligible, key=lambda n: summary[n]["J_holdout"]) if eligible else champ
+    print(f"[DECISION] eligible={eligible}")
+    for n in names:
+        print(f"  {n:28s} J_holdout={summary[n]['J_holdout']:8.2f} J_search={summary[n]['J_search']:8.2f} "
+              f"{'DQ: ' + '; '.join(verdicts[n]['reasons']) if verdicts[n]['disqualified'] else 'ok'}")
+    print(f"[DECISION] highest held-out J: {winner}")
+
+    (out_dir / "decision.json").write_text(json.dumps(
+        {"rule": DECISION_RULE, "summary": summary, "verdicts": verdicts, "winner_by_J": winner},
+        indent=2, default=str) + "\n")
+
+    if args.bank_key:
+        bank_path = Path(args.z_bank).expanduser().resolve()
+        existing = torch.load(bank_path, map_location="cpu", weights_only=False) if bank_path.exists() else {}
+        if "getup" in existing:  # never touch the deployed entry
+            assert isinstance(existing["getup"], dict) and "z" in existing["getup"]
+        entry_name = args.bank_z or winner
+        existing[args.bank_key] = {
+            "z": zs[entry_name].float(),
+            "mode": "constant",
+            "source": {
+                "candidate": entry_name,
+                "derived_from": "CEM over a subspace of the z-sphere (humanoidverse/tools/opt_getup_z.py)",
+                "checkpoint": str(args.model_folder),
+                "workstream": "E",
+                "decision_rule": DECISION_RULE,
+            },
+            "score": {k: v for k, v in summary[entry_name].items() if k != "paired_vs_champion"},
+            "holdout_score": {
+                cond: summary[entry_name]["conditions"][cond]
+                for cond in summary[entry_name]["conditions"] if "holdout" in cond
+            },
+            "paired_vs_champion": summary[entry_name]["paired_vs_champion"],
+            "search_config": search["search_config"],
+            "z_dim": int(zs[entry_name].numel()),
+        }
+        torch.save(existing, bank_path)
+        print(f"[INFO] wrote z-bank key '{args.bank_key}' (= {entry_name}) -> {bank_path}; "
+              f"keys now {sorted(existing)}")
+
+    if args.npz_out:
+        npz = {f"z/{n}": zs[n].numpy().astype(np.float32) for n in names}
+        np.savez(str(Path(args.npz_out).expanduser()), **npz)
+        print(f"[INFO] wrote sim2sim z-bank -> {args.npz_out}")
