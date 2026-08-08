@@ -197,6 +197,15 @@ def run_goal_inference(
     )
     wrapped_env, _ = env_cfg.build(num_envs=1)
     env = wrapped_env._env
+    # Load every motion up front (as tracking_inference.py does) so per-goal
+    # env.set_is_evaluating(motion_id) below can address motions by their
+    # original/global motion_id. Without this, set_is_evaluating(motion_id)
+    # with num_envs=1 loads exactly one motion into a length-1 local buffer
+    # (see MotionLibRobot.load_motions_for_evaluation), so a subsequent
+    # get_backward_observation(env, motion_id, ...) call -- which indexes
+    # that buffer with the original global motion_id, not local index 0 --
+    # raises IndexError for any motion_id != 0.
+    env._motion_lib.load_all_motions()
 
     output_dir = model_folder / "goal_inference"
     output_dir.mkdir(parents=True, exist_ok=True)
