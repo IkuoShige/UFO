@@ -44,6 +44,15 @@ explicit override for turf adaptation.
 
 No full training or `5090_v2` checkpoint mutation was performed locally.
 
+### Immediate no-finetune fallback
+
+Before the remote finetune completes, the frozen actor can use the existing
+`standing_pooled` latent under the deployment alias `getup_turf`. Across two paired
+64-episode seeds it improved upright success by 12.5--14.8 percentage points at
+fixed friction 0.05--0.20, with no upright regression at 0.5 or 1.0. This is a
+runtime `z` selection, not learning. Method, full table, deployment-bank builder,
+and limitations are in `docs/k1_turf_z_search.md`.
+
 ### Pre-finetune low-friction baseline
 
 `5090_v2` + its deployed `getup_opt` was evaluated with the corrected one-ground

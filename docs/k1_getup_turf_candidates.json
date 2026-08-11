@@ -7,5 +7,14 @@
       "path": "runs/ufo_fb_k1_5090_v2/export_onnx/z_bank.npz",
       "key": "z/getup_opt"
     }
+  },
+  {
+    "name": "standing_pooled_5090_v2",
+    "type": "constant",
+    "source": {
+      "kind": "file",
+      "path": "runs/ufo_fb_k1_5090_v2/export_onnx/z_bank.npz",
+      "key": "z/standing_pooled"
+    }
   }
 ]
