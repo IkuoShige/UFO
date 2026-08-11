@@ -7,9 +7,12 @@ Defaults are kept in this file; command-line arguments can override them.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -52,6 +55,53 @@ AGENT_ALIASES = {
     "tech": "tech",
     "tldr": "tech",
 }
+
+
+def _resolve_checkpoint_dir(path: str | Path) -> Path:
+    candidate = Path(path).expanduser().resolve()
+    if (candidate / "train_status.json").is_file():
+        checkpoint_dir = candidate
+    else:
+        checkpoint_dir = candidate / "checkpoint"
+    if not (checkpoint_dir / "train_status.json").is_file():
+        raise FileNotFoundError(f"No checkpoint/train_status.json found under resume source: {candidate}")
+    return checkpoint_dir
+
+
+def _stage_resume_checkpoint(resume_from: str | Path, work_dir: str | Path) -> Path:
+    """Copy a checkpoint into a new run directory without mutating the source run."""
+
+    source = _resolve_checkpoint_dir(resume_from)
+    target_run = Path(work_dir).expanduser().resolve()
+    target = target_run / "checkpoint"
+    if source == target:
+        raise ValueError("--resume-from must point to a different run; omit it to resume in place")
+    if target.exists():
+        raise FileExistsError(
+            f"Refusing to overwrite existing target checkpoint: {target}. "
+            "Omit --resume-from to continue that staged run."
+        )
+
+    target_run.mkdir(parents=True, exist_ok=True)
+    staging_root = Path(tempfile.mkdtemp(prefix=".resume-staging-", dir=target_run))
+    try:
+        staging_checkpoint = staging_root / "checkpoint"
+        shutil.copytree(source, staging_checkpoint)
+        staging_checkpoint.replace(target)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+    source_status = json.loads((source / "train_status.json").read_text())
+    (target_run / "resume_source.json").write_text(
+        json.dumps(
+            {
+                "source_checkpoint": str(source),
+                "source_train_status": source_status,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return target
 
 from humanoidverse.agents.envs.humanoidverse_mjlab import HumanoidVerseMjlabConfig
 from humanoidverse.agents.evaluations.humanoidverse_mjlab import HumanoidVerseMjlabTrackingEvaluationConfig
@@ -113,6 +163,7 @@ def build_ufo_mjlab_config(
     cartwheel_aux_safe: bool = False,
     num_agent_updates: int | None = None,
     robot_config: str | Path | None = None,
+    friction_range: tuple[float, float] | list[float] | None = None,
 ) -> TrainConfig:
     agent = canonical_agent_name(agent)
     robot_training = load_robot_training_spec(robot_config or DEFAULT_ROBOT_CONFIG)
@@ -172,6 +223,13 @@ def build_ufo_mjlab_config(
         f"robot.control.normalize_action_to={robot_training.normalize_action_to}",
         *robot_training.hydra_overrides,
     ]
+    if friction_range is not None:
+        if len(friction_range) != 2:
+            raise ValueError(f"friction_range must contain exactly two values, got {friction_range}")
+        low, high = (float(friction_range[0]), float(friction_range[1]))
+        if low < 0.0 or high < low:
+            raise ValueError(f"friction_range must satisfy 0 <= low <= high, got ({low}, {high})")
+        hydra_overrides.append(f"domain_rand.friction_range=[{low},{high}]")
     if cartwheel_aux_safe:
         hydra_overrides.extend(
             [
@@ -318,6 +376,7 @@ def run_train(args: argparse.Namespace, log_dir: Path) -> None:
         clip_grad_norm=args.clip_grad_norm,
         cartwheel_aux_safe=bool(args.cartwheel_aux_safe),
         num_agent_updates=args.num_agent_updates,
+        friction_range=args.friction_range,
         robot_config=args.robot_config,
     )
     print(
@@ -329,6 +388,7 @@ def run_train(args: argparse.Namespace, log_dir: Path) -> None:
         f"num_env_steps_global={args.num_env_steps}, buffer_size_per_rank={cfg.buffer_size}, "
         f"num_agent_updates={cfg.num_agent_updates}, update_agent_every_local={cfg.update_agent_every}, "
         f"cartwheel_aux_safe={args.cartwheel_aux_safe}, lr_scale={args.lr_scale}, clip_grad_norm={args.clip_grad_norm}, "
+        f"friction_range={args.friction_range if args.friction_range is not None else 'robot-config-default'}, "
         f"disable_dr={cfg.env.disable_domain_randomization}, disable_obs_noise={cfg.env.disable_obs_noise}, "
         f"compile={cfg.agent.compile}",
         flush=True,
@@ -346,6 +406,9 @@ def run_train(args: argparse.Namespace, log_dir: Path) -> None:
 
 def launch(args: argparse.Namespace) -> None:
     log_dir = Path(args.work_dir).expanduser().resolve()
+    if args.resume_from is not None:
+        staged = _stage_resume_checkpoint(args.resume_from, log_dir)
+        print(f"[INFO] Staged resume checkpoint: source={args.resume_from}, target={staged}", flush=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     _ensure_compile_cache()
     if args.gpu_ids in (None, "single"):
@@ -411,6 +474,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-ids", default="single", help="'single', 'all', or a comma-separated GPU id list relative to CUDA_VISIBLE_DEVICES.")
     parser.add_argument("--work-dir", default=DEFAULT_WORK_DIR)
     parser.add_argument(
+        "--resume-from",
+        type=Path,
+        default=None,
+        help=(
+            "Copy an existing run/checkpoint into a new --work-dir before training. "
+            "This preserves the source checkpoint; omit this flag when continuing the staged run later."
+        ),
+    )
+    parser.add_argument(
         "--robot-config",
         type=Path,
         default=None,
@@ -463,6 +535,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--disable-dr", action="store_true", help="Disable domain randomization for training.")
+    parser.add_argument(
+        "--friction-range",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        default=None,
+        help=(
+            "Override the effective ground-contact tangential-friction range. "
+            "Defaults to the reference config [0.5, 1.25]; turf adaptation should "
+            "use a separately calibrated lower bound."
+        ),
+    )
     parser.add_argument("--disable-obs-noise", action="store_true", help="Disable observation noise for training.")
     parser.add_argument("--lr-scale", type=float, default=1.0, help="Scale FB learning rates. TeCH preset ignores this value.")
     parser.add_argument("--clip-grad-norm", type=float, default=0.0, help="Enable FB actor/FB gradient clipping when > 0.")
@@ -526,6 +610,10 @@ def parse_args() -> argparse.Namespace:
         raise ValueError("--lr-scale must be positive")
     if args.clip_grad_norm < 0:
         raise ValueError("--clip-grad-norm must be non-negative")
+    if args.friction_range is not None:
+        low, high = args.friction_range
+        if low < 0.0 or high < low:
+            raise ValueError("--friction-range must satisfy 0 <= LOW <= HIGH")
     if args.cartwheel_aux_safe and args.agent != "fb":
         raise ValueError("--cartwheel-aux-safe is only supported with --agent fb")
     return args

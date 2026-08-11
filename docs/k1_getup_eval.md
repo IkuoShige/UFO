@@ -4,6 +4,13 @@ Workstream A. Checkpoint under test: `runs/ufo_fb_k1_5090_v2/checkpoint` (FB-CPR
 `z_dim=256`, 192M env steps, K1 22-dof). Harness: `humanoidverse/tools/eval_getup.py`.
 Raw results: `runs/getup_eval/` (`episodes_<tag>.csv`, `summary_<tag>.json`, `z_candidates_<tag>.pt`).
 
+> **Friction correction (2026-08-12):** The original DR tables in this report used
+> the historical two-plane K1 scene. Because terrain friction stayed at 1.0, those
+> results do **not** establish low-friction robustness even where the configured
+> robot-geom range says 0.5–1.25. The scene/DR bug is fixed for new runs; see
+> [`k1_turf_finetune.md`](k1_turf_finetune.md). Other conclusions remain historical
+> results for the `5090_v2` checkpoint and are not silently relabeled.
+
 ## Headline
 
 **The BFM already knows how to get up. The latent that unlocks it is a *standing* latent, not a

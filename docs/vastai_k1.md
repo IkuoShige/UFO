@@ -26,6 +26,11 @@ path](robot_config_training.md), and how to run it on a rented GPU box on
   the explicit `columns:` block in the manifest).
 - `scripts/download_k1_lafan1_data.sh` — downloads and stages that dataset
   under `humanoidverse/data/k1_lafan1/`.
+- The MJLab bridge removes the world-level ground embedded in the K1 MJCF and
+  keeps one scene-owned terrain plane. Friction DR samples one coefficient per
+  environment and writes it to both robot and terrain geoms, so the configured
+  range is now the effective contact-friction range rather than being masked by
+  the old second plane.
 - `Dockerfile` — CUDA 12.8 image with `uv sync`, `booster_assets` cloned as a
   sibling directory, the K1 LAFAN1 CSVs staged, and the motion cache
   pre-built. `pyproject.toml` pins `torch`/`torchvision` to PyTorch's cu128
@@ -164,6 +169,38 @@ setting for that card. Official G1 results
 use the full 192M steps (~4 days at ~570 FPS on one 5090); judging quality
 before ~100M steps is premature, and fall-recovery is the last skill to
 emerge.
+
+For a fresh run, omit `--friction-range`: the reference `[0.5, 1.25]` range is
+applied to the corrected effective contact. This covers both new training and any
+ordinary in-place checkpoint continuation.
+
+### Continue `5090_v2` for turf friction
+
+`ufo_fb_k1_5090_v2` was trained before the two-ground/contact-friction bug was
+fixed. Preserve it as a rollback baseline and stage its complete checkpoint into a
+new run for an initial 8M-step low-friction continuation:
+
+```bash
+./run_train.sh \
+  --agent fb \
+  --robot-config configs/robots/k1_22dof.yaml \
+  --data-manifest configs/data/k1_lafan1.yaml \
+  --gpu-ids single \
+  --num-envs 512 \
+  --num-env-steps 200000000 \
+  --update-z-every-step 100 \
+  --buffer-size 2000000 \
+  --friction-range 0.05 1.25 \
+  --resume-from runs/ufo_fb_k1_5090_v2 \
+  --work-dir runs/ufo_fb_k1_5090_v2_turf_ft
+```
+
+`--num-env-steps` is the final global step target, so 200M continues a 192M
+checkpoint for 8M more steps. Resume restores the saved FB agent, optimizer, replay
+buffer, and reference learning rates; the new environment supplies the corrected
+friction range. If training stops after the target has been staged, rerun without
+`--resume-from`. Full rationale, smoke evidence, baseline numbers, and evaluation
+gates are in [the turf adaptation note](k1_turf_finetune.md).
 
 Swap `--agent fb` for `--agent tech` for TeCH training, same as the G1 path
 in the main README.

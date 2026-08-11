@@ -4,12 +4,10 @@
 Drops the robot into a fallen pose, drives it with the exported ONNX meta-policy
 plus a latent ``z``, and reports whether it stands up. Writes an mp4.
 
-The MuJoCo model is assembled to mirror the *training* scene exactly:
+The MuJoCo model is assembled to mirror the *corrected training* scene exactly:
 
-  * mjlab attaches the robot MJCF (actuators stripped) into a parent spec that
-    already holds a ``terrain`` plane, so the compiled model ends up with TWO
-    coincident ground planes -- ``robot/ground`` from K1_22dof.xml and mjlab's
-    ``terrain``. Reproduced here (see ``--single-ground`` to A/B it).
+  * MJLab owns one ``terrain`` plane; any world-level plane embedded in the robot
+    MJCF is stripped before attachment.
   * torque-mode ``<motor>`` actuators + a Python PD loop at the physics rate,
     matching mjlab's DcMotorActuator (velocity-derated torque-speed curve).
   * ``MujocoCfg`` solver/integrator settings, which override the MJCF ``<option>``
@@ -83,7 +81,7 @@ class SimHandles:
     root_dof_adr: int
 
 
-def build_training_equivalent_model(xml_path: Path, spec: dict, *, single_ground: bool = False) -> SimHandles:
+def build_training_equivalent_model(xml_path: Path, spec: dict, *, single_ground: bool = True) -> SimHandles:
     """Compile the same MjModel mjlab compiled during training."""
     child = mujoco.MjSpec.from_file(str(xml_path))
     for actuator in list(child.actuators):
@@ -232,7 +230,8 @@ def run(
     seconds: float = 6.0,
     settle_seconds: float = 1.0,
     face_down: bool = False,
-    single_ground: bool = False,
+    single_ground: bool = True,
+    ground_friction: float | None = None,
     blend_steps: int = 25,
     fps: int = 50,
     width: int = 640,
@@ -243,6 +242,11 @@ def run(
     bank_path = Path(z_bank).expanduser() if z_bank else export_dir / "z_bank.npz"
 
     sim = build_training_equivalent_model(Path(spec["xml_path"]), spec, single_ground=single_ground)
+    if ground_friction is not None:
+        if ground_friction < 0.0:
+            raise ValueError(f"ground_friction must be non-negative, got {ground_friction}")
+        # Match training DR: one material draw on both sides of ground contacts.
+        sim.model.geom_friction[:, 0] = float(ground_friction)
     pd = DcMotorPd(spec)
     decimation = int(spec["control_decimation"])
     control_dt = decimation * sim.model.opt.timestep
@@ -264,6 +268,8 @@ def run(
         if sim.model.geom_type[i] == mujoco.mjtGeom.mjGEOM_PLANE
     ]
     print(f"[INFO] ground planes in scene: {planes}")
+    if ground_friction is not None:
+        print(f"[INFO] fixed effective tangential friction: {ground_friction}")
     print(f"[INFO] timestep={sim.model.opt.timestep} decimation={decimation} control_dt={control_dt}")
     print(f"[INFO] z='{z_name}' from {bank_path.name}; available {sorted(bank.names())}")
 
@@ -332,6 +338,8 @@ def run(
     first = int(np.argmax(standing)) if standing.any() else -1
     result = {
         "z_name": z_name,
+        "ground_planes": planes,
+        "ground_friction": ground_friction,
         "steps": len(heights),
         "settle_root_height": settle_height,
         "target_root_height": target_h,

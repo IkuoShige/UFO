@@ -35,8 +35,9 @@ produced a policy that runs without error and behaves badly.
 | `dof_pos` might be absolute | **Relative to the default pose**: `dof_pos - (default_dof_pos + default_dof_pos_offset)` | `humanoidverse_mjlab.py:928` |
 | `action_scale` is the flat `0.5` from the config | `action_rescale: true`, so the effective per-joint scale is `0.5 · effort_limit_i / kp_i` — ranging **0.28 to 1.77**, a 6× spread | `humanoidverse_mjlab.py:433-438`, `configs/robots/k1_22dof.yaml` |
 
-One more, unrelated to the actor: the training scene contains **two coincident
-ground planes** (§7).
+One more, unrelated to the actor: the historical training scene contained **two
+coincident ground planes**. This is now corrected for fresh and resumed training
+(§7).
 
 ---
 
@@ -243,7 +244,15 @@ mjlab's defaults: `implicitfast`, Newton, `impratio=1.0`, pyramidal cone,
 
 ---
 
-## 7. Scene: two coincident ground planes
+## 7. Scene correction: one ground plane
+
+> **Correction (2026-08-12):** The two-plane scene described below was a training
+> bug, not a required part of the K1 model. `humanoidverse_mjlab.py` now strips an
+> embedded world-level plane from the robot asset and retains the MJLab `terrain`
+> only. Friction DR writes the same sampled coefficient to the robot and terrain,
+> so the configured range controls effective contact friction. See
+> [`k1_turf_finetune.md`](k1_turf_finetune.md). The remainder of this section records
+> the pre-fix diagnosis for provenance.
 
 mjlab attaches the robot MJCF into a parent spec that already carries a
 `TerrainEntityCfg(terrain_type="plane")` ground (`humanoidverse_mjlab.py:571`,
@@ -259,9 +268,9 @@ survives the attach. The compiled training model therefore contains **both**:
 Verified by replicating the attach in plain MuJoCo. MuJoCo takes the elementwise max
 of the two geoms' friction and `max(condim)` per contact pair, so the effective foot
 friction is ~1.0, but every foot contact is duplicated, which stiffens the ground.
-`tools/k1_ufo_sim2sim.py --single-ground` A/B tests this; get-up succeeds either way,
-so it is not load-bearing for this skill — but it is a latent training-scene bug and
-should be fixed deliberately, not by accident.
+Historical `tools/k1_ufo_sim2sim.py --single-ground` A/B tests showed get-up could
+succeed either way. The tool now uses the corrected single-ground scene by default;
+`--no-single-ground` exists only for comparison with the historical bug.
 
 `booster_k1_locomotion`'s `mujoco_sim_node.py` loads a single XML, so pointing it at
 `K1_22dof.xml` gives the single-plane variant. `assets/rfc_assets/` is an
