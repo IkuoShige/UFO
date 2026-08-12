@@ -62,6 +62,12 @@ Evaluation = tp.Annotated[
 Agent = FBcprAgentConfig | FBcprAuxAgentConfig | TldrDistAuxAgentConfig
 
 
+def _should_save_final_checkpoint(*, global_time: int, last_checkpoint_global_time: int) -> bool:
+    """Return whether training has progressed beyond the last durable checkpoint."""
+
+    return global_time > last_checkpoint_global_time
+
+
 def _trajectory_output_keys(agent: Agent) -> list[str]:
     keys = [
         "observation",
@@ -638,6 +644,7 @@ class Workspace:
         start_time = time.time()
         fps_start_time = time.time()
         checkpoint_time_checker = EveryNStepsChecker(self._checkpoint_global_time, self.cfg.checkpoint_every_steps)
+        last_checkpoint_global_time = self._checkpoint_global_time
         eval_time_checker = EveryNStepsChecker(self._checkpoint_global_time, self.cfg.eval_every_steps)
         update_agent_time_checker = EveryNStepsChecker(self._checkpoint_local_time, self.cfg.update_agent_every)
         log_time_checker = EveryNStepsChecker(self._checkpoint_global_time, self.cfg.log_every_updates)
@@ -655,8 +662,20 @@ class Workspace:
             if (local_time != self._checkpoint_local_time) and checkpoint_time_checker.check(global_time):
                 checkpoint_time_checker.update_last_step(global_time)
                 self.save(local_time=local_time, global_time=global_time, optimizer_steps=self._optimizer_steps, replay_buffer=replay_buffer)
+                last_checkpoint_global_time = global_time
 
             if global_time >= self.cfg.num_env_steps:
+                if _should_save_final_checkpoint(
+                    global_time=global_time,
+                    last_checkpoint_global_time=last_checkpoint_global_time,
+                ):
+                    self.save(
+                        local_time=local_time,
+                        global_time=global_time,
+                        optimizer_steps=self._optimizer_steps,
+                        replay_buffer=replay_buffer,
+                    )
+                    last_checkpoint_global_time = global_time
                 break
 
             if (self.evaluate and eval_time_checker.check(global_time)) or (
@@ -746,6 +765,17 @@ class Workspace:
                     )
 
             if global_time + global_step_increment > self.cfg.num_env_steps:
+                if _should_save_final_checkpoint(
+                    global_time=global_time,
+                    last_checkpoint_global_time=last_checkpoint_global_time,
+                ):
+                    self.save(
+                        local_time=local_time,
+                        global_time=global_time,
+                        optimizer_steps=self._optimizer_steps,
+                        replay_buffer=replay_buffer,
+                    )
+                    last_checkpoint_global_time = global_time
                 if self._write_shared_artifacts:
                     print(
                         "[INFO] Stopping before next rollout to avoid exceeding global sample budget: "
