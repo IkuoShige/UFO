@@ -2,10 +2,11 @@
 
 ## Decision
 
-Use the existing `standing_pooled` latent from the frozen
-`runs/ufo_fb_k1_5090_v2` actor as the low-friction get-up skill. The deployment
-alias is `getup_turf`. Keep the current `getup_opt` latent in the same bank for
-instant rollback.
+Rejected on real hardware. The existing `standing_pooled` latent from the frozen
+`runs/ufo_fb_k1_5090_v2` actor was tested under the deployment alias `getup_turf`,
+but it performed worse than `getup_opt` on artificial turf on 2026-08-12. Use
+`getup_opt`; retain this document and the alias only as a reproducible negative
+result.
 
 This changes only the 256-dimensional runtime latent `z`. It does not train,
 finetune, or modify the actor, backward encoder, optimizer, or checkpoint.
@@ -96,18 +97,21 @@ The output is
 - `z/getup_opt`: current deployed vector for rollback;
 - `z/standing_pooled`: explicit source-name alias.
 
-For `booster_k1_locomotion`, place that file in the get-up bundle as `z_bank.npz`
-and launch with `getup_z:=getup_turf`. Roll back with `getup_z:=getup_opt`. The ONNX
-actor and deploy spec do not change.
+For historical reproduction in `booster_k1_locomotion`, place that file in the
+get-up bundle as `z_bank.npz` and launch simulation with
+`getup_z:=getup_turf`. Do not select it on hardware; use
+`getup_z:=getup_opt`. The ONNX actor and deploy spec do not change.
 
-## Limit and hardware gate
+## Limit and hardware result
 
-This is meaningful as an immediate no-training mitigation, but it is not a guarantee
-for real turf. The simulator models scalar Coulomb friction; turf pile compliance,
-toe catching, local height changes, and directional drag are absent. It also does
-not reach 100% under the extreme 0.05--0.20 OOD stress cells.
+This was a meaningful simulator experiment, but not an effective real-turf
+mitigation. The simulator models scalar Coulomb friction; turf pile compliance, toe
+catching, local height changes, and directional drag are absent. It also did not
+reach 100% under the extreme 0.05--0.20 OOD stress cells.
 
-Treat `getup_turf` as an A/B hardware candidate and test with the normal support,
-clearance, and emergency-stop procedure before replacing the default. The separate
-friction finetune remains useful because it can change the policy itself rather than
-only select a more suitable behavior already present in 5090_v2.
+The hardware A/B gate rejected `getup_turf`: it was worse than the previous
+`getup_opt` deployment on real artificial turf. This demonstrates that the scalar
+Coulomb-friction simulation result did not transfer; it must not be used as evidence
+that the alias is safer or more robust on K1. The separate friction finetune remains
+the active experiment because it can change the policy itself, but it still requires
+the same hardware gate after checkpoint and latent regeneration.

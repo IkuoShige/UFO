@@ -44,14 +44,15 @@ explicit override for turf adaptation.
 
 No full training or `5090_v2` checkpoint mutation was performed locally.
 
-### Immediate no-finetune fallback
+### No-finetune candidate: rejected on hardware
 
-Before the remote finetune completes, the frozen actor can use the existing
-`standing_pooled` latent under the deployment alias `getup_turf`. Across two paired
-64-episode seeds it improved upright success by 12.5--14.8 percentage points at
-fixed friction 0.05--0.20, with no upright regression at 0.5 or 1.0. This is a
-runtime `z` selection, not learning. Method, full table, deployment-bank builder,
-and limitations are in `docs/k1_turf_z_search.md`.
+The frozen-policy `standing_pooled` latent was exposed as `getup_turf` after it
+improved low-friction simulation results. Real K1 deployment on artificial turf
+was worse than the previous `getup_opt` behavior on 2026-08-12. It is therefore a
+rejected experiment, not a deployment recommendation. Restore
+`getup_z:=getup_opt`; keep the simulation result only as evidence of a sim-to-real
+modeling gap. Method and the historical simulation table are in
+`docs/k1_turf_z_search.md`.
 
 ### Pre-finetune low-friction baseline
 
@@ -123,6 +124,60 @@ values, not a newly built agent preset, govern a resumed agent.
 If interrupted after staging, rerun the same command **without** `--resume-from`.
 The existing target checkpoint then resumes normally. Keep the original
 `runs/ufo_fb_k1_5090_v2` unchanged as the rollback baseline.
+
+### Recovery from the 197.3M NaN stop
+
+The first remote continuation stopped with exit status 1 at global step
+197,327,872. All FB, discriminator, critic, actor, and latent metrics became NaN in
+the same update. The last durable checkpoint was written earlier at 195,200,000;
+finite console metrics after that point were not checkpointed.
+
+The simultaneous failure is consistent with a non-finite replay transition
+updating BatchNorm running statistics before the old post-update finite check ran.
+The training path now:
+
+- validates every new rollout before replay insertion;
+- rejects and resamples non-finite batches before updating normalization state;
+- validates normalized observations and latents;
+- rejects non-finite gradients before every FB-CPR optimizer step.
+
+These checks do not change finite updates or the friction distribution. Before
+resuming, audit the saved model, optimizer state, and replay buffer:
+
+```bash
+uv run python tools/audit_checkpoint_finite.py \
+  runs/ufo_fb_k1_5090_v2_turf_ft
+```
+
+Resume only when this reports `PASS`. Continue the already-staged run without
+`--resume-from`, using the same final target and friction range:
+
+```bash
+./run_train.sh \
+  --agent fb \
+  --robot-config configs/robots/k1_22dof.yaml \
+  --data-manifest configs/data/k1_lafan1.yaml \
+  --gpu-ids single \
+  --num-envs 512 \
+  --num-env-steps 200000000 \
+  --update-z-every-step 100 \
+  --buffer-size 2000000 \
+  --friction-range 0.05 1.25 \
+  --work-dir runs/ufo_fb_k1_5090_v2_turf_ft
+```
+
+If the audit fails in model or optimizer state, do not resume that checkpoint. If
+only isolated replay entries fail, preserve the audit output and rebuild or filter
+the replay buffer rather than allowing those entries to update BatchNorm.
+
+The copied 195.2M checkpoint was audited locally on 2026-08-12. The audit checked
+834,333,988 model values, 868,562,038 optimizer-state values, and 2,103,865,344
+replay values; all were finite. An isolated resume smoke then loaded that checkpoint
+and replay, created 512 K1 environments with friction DR `[0.05, 1.25]`, and
+completed one guarded FB-CPR update with exit status 0. The smoke used a CPU replay
+copy to fit a 24 GiB local GPU and disabled checkpoint writes; the source 195.2M
+checkpoint remained unchanged. The full remote continuation should retain the
+normal CUDA replay setting used by `run_train.sh`.
 
 The 0.05 lower bound is a stress setting, not a measured turf coefficient. Before a
 longer continuation, compare fixed-friction evaluation at 0.05, 0.1, 0.2, 0.5, and

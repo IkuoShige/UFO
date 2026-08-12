@@ -302,6 +302,9 @@ def build_ufo_mjlab_config(
         distributed_sync=distributed_sync,
         distributed_global_steps=True,
         distributed_average_metrics=True,
+        # Validate every newly collected transition before it can enter replay.
+        # Sample-time guards still handle buffers saved by older revisions.
+        nonfinite_check_rollout_every_local_steps=1,
         tags={"backend": "mjlab", "agent": agent, "distributed_rank": distributed_rank, "distributed_world_size": distributed_world_size},
     )
 
