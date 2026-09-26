@@ -195,6 +195,38 @@ class RobotConfigTrainingTest(unittest.TestCase):
         )
         self.assertIn("domain_rand.friction_range=[0.2,0.8]", cfg.env.hydra_overrides)
 
+    def test_hydra_override_cli_flag_reaches_hydra_config(self) -> None:
+        argv = [
+            "train.py",
+            "--hydra-override",
+            "domain_rand.randomize_ctrl_delay=true",
+            "domain_rand.ctrl_delay_step_range=[0,2]",
+        ]
+        with patch.object(sys, "argv", argv):
+            args = parse_train_args()
+        self.assertEqual(
+            args.hydra_override,
+            ["domain_rand.randomize_ctrl_delay=true", "domain_rand.ctrl_delay_step_range=[0,2]"],
+        )
+        cfg = build_ufo_mjlab_config(
+            device="cpu",
+            work_dir="/tmp/ufo_unit",
+            num_envs=1,
+            num_env_steps=1,
+            seed=1,
+            use_wandb=False,
+            wandb_run_name=None,
+            smoke=True,
+            extra_hydra_overrides=args.hydra_override,
+        )
+        self.assertIn("domain_rand.randomize_ctrl_delay=true", cfg.env.hydra_overrides)
+        self.assertIn("domain_rand.ctrl_delay_step_range=[0,2]", cfg.env.hydra_overrides)
+
+    def test_hydra_override_defaults_to_none(self) -> None:
+        with patch.object(sys, "argv", ["train.py"]):
+            args = parse_train_args()
+        self.assertIsNone(args.hydra_override)
+
     def test_training_friction_override_rejects_invalid_range(self) -> None:
         with self.assertRaisesRegex(ValueError, "0 <= low <= high"):
             build_ufo_mjlab_config(

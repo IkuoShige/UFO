@@ -164,6 +164,7 @@ def build_ufo_mjlab_config(
     num_agent_updates: int | None = None,
     robot_config: str | Path | None = None,
     friction_range: tuple[float, float] | list[float] | None = None,
+    extra_hydra_overrides: list[str] | None = None,
 ) -> TrainConfig:
     agent = canonical_agent_name(agent)
     robot_training = load_robot_training_spec(robot_config or DEFAULT_ROBOT_CONFIG)
@@ -241,6 +242,8 @@ def build_ufo_mjlab_config(
                 "rewards.reward_scales.penalty_action_rate=-0.1",
             ]
         )
+    if extra_hydra_overrides:
+        hydra_overrides.extend(str(x) for x in extra_hydra_overrides)
 
     return TrainConfig(
         name="TrainConfig",
@@ -381,6 +384,7 @@ def run_train(args: argparse.Namespace, log_dir: Path) -> None:
         num_agent_updates=args.num_agent_updates,
         friction_range=args.friction_range,
         robot_config=args.robot_config,
+        extra_hydra_overrides=args.hydra_override,
     )
     print(
         "[INFO] UFO train: "
@@ -393,6 +397,7 @@ def run_train(args: argparse.Namespace, log_dir: Path) -> None:
         f"cartwheel_aux_safe={args.cartwheel_aux_safe}, lr_scale={args.lr_scale}, clip_grad_norm={args.clip_grad_norm}, "
         f"friction_range={args.friction_range if args.friction_range is not None else 'robot-config-default'}, "
         f"disable_dr={cfg.env.disable_domain_randomization}, disable_obs_noise={cfg.env.disable_obs_noise}, "
+        f"hydra_override={args.hydra_override}, "
         f"compile={cfg.agent.compile}",
         flush=True,
     )
@@ -551,6 +556,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--disable-obs-noise", action="store_true", help="Disable observation noise for training.")
+    parser.add_argument(
+        "--hydra-override",
+        nargs="+",
+        default=None,
+        metavar="KEY=VALUE",
+        help=(
+            "Extra raw Hydra overrides for humanoidverse/config, appended after the built-in ones "
+            "(e.g. --hydra-override domain_rand.randomize_ctrl_delay=true "
+            "domain_rand.ctrl_delay_step_range=[0,2]). Applied verbatim; not validated here."
+        ),
+    )
     parser.add_argument("--lr-scale", type=float, default=1.0, help="Scale FB learning rates. TeCH preset ignores this value.")
     parser.add_argument("--clip-grad-norm", type=float, default=0.0, help="Enable FB actor/FB gradient clipping when > 0.")
     parser.add_argument(
