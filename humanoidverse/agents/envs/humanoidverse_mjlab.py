@@ -295,6 +295,23 @@ def _patch_humanoidverse_robot_config(config, robot_training: dict[str, Any] | N
     config.robot.motion.nums_extend_bodies = len(extend_config)
 
 
+def _ctrl_delay_physics_step_range(domain_rand_cfg, decimation: int) -> tuple[int, int]:
+    """Translate ``domain_rand.ctrl_delay_step_range`` (control ticks) to physics steps.
+
+    MJLab's actuator delay (``ActuatorCfg.delay_min_lag``/``delay_max_lag``) is expressed in
+    physics timesteps, while UFO's ``ctrl_delay_step_range`` is expressed in control ticks
+    (``decimation`` physics steps each). Returns ``(0, 0)`` when
+    ``domain_rand.randomize_ctrl_delay`` is falsy, which callers treat as "delay disabled".
+    """
+    if not bool(domain_rand_cfg.get("randomize_ctrl_delay", False)):
+        return 0, 0
+    delay_range = _to_list(domain_rand_cfg.ctrl_delay_step_range)
+    if len(delay_range) != 2 or delay_range[0] < 0 or delay_range[1] < delay_range[0]:
+        raise ValueError(f"domain_rand.ctrl_delay_step_range must be [low, high] with 0 <= low <= high: {delay_range}")
+    lo_ticks, hi_ticks = int(delay_range[0]), int(delay_range[1])
+    return lo_ticks * int(decimation), hi_ticks * int(decimation)
+
+
 def _actuator_params_from_training(dof_names: tp.Sequence[str], robot_training: dict[str, Any] | None) -> tuple[str, dict[str, list[float]]]:
     if not robot_training:
         return G1_MJLAB_ACTUATOR_SOURCE, _g1_mjlab_mode15_actuator_params(dof_names)
@@ -474,6 +491,36 @@ def make_mjlab_ufo_env_cfg(
     armature = actuator_params["armature"]
     friction = actuator_params["friction"]
 
+    decimation = int(config.simulator.config.sim.control_decimation)
+    ctrl_delay_lo_steps, ctrl_delay_hi_steps = _ctrl_delay_physics_step_range(config.domain_rand, decimation)
+    ctrl_delay_kwargs: dict[str, Any] = {}
+    if ctrl_delay_hi_steps > 0:
+        ctrl_delay_kwargs = dict(
+            delay_min_lag=ctrl_delay_lo_steps,
+            delay_max_lag=ctrl_delay_hi_steps,
+            # MJLab resamples a DelayBuffer's lag according to
+            # (delay_update_period, delay_hold_prob, delay_per_env_phase). We want the
+            # lag fixed for an entire episode and resampled only at reset, which none of
+            # MJLab's periodic-resampling knobs express directly (resampling is keyed off
+            # a step counter that is unaware of "at reset"). delay_hold_prob=1.0 makes
+            # MJLab's own resampling condition (`rand() >= hold_prob`) never true, so the
+            # lag never moves except when HumanoidVerseMjlabCore explicitly calls
+            # act.set_lags(...) -- which it does exactly once per episode, right after
+            # each reset (see reset_idx/_sample_and_apply_ctrl_delay_lags below).
+            # delay_update_period/delay_per_env_phase are irrelevant once resampling is
+            # fully suppressed this way; pinned to inert values for clarity.
+            delay_hold_prob=1.0,
+            delay_update_period=0,
+            delay_per_env_phase=False,
+        )
+    print(
+        "[INFO] MJLab ctrl delay DR: "
+        f"enabled={ctrl_delay_hi_steps > 0}, "
+        f"ctrl_delay_step_range={_to_list(config.domain_rand.get('ctrl_delay_step_range', [0, 0]))}, "
+        f"decimation={decimation}, physics_lag_range=[{ctrl_delay_lo_steps}, {ctrl_delay_hi_steps}]",
+        flush=True,
+    )
+
     actuators = []
     action_scale = {}
     for i, joint_name in enumerate(dof_names):
@@ -490,6 +537,7 @@ def make_mjlab_ufo_env_cfg(
                 velocity_limit=velocity_limits[i],
                 armature=armature[i] if i < len(armature) else None,
                 frictionloss=friction[i] if i < len(friction) else None,
+                **ctrl_delay_kwargs,
             )
         )
 
@@ -776,6 +824,13 @@ class HumanoidVerseMjlabCore:
         self.history_handler = HVHistoryHandler(self.num_envs, hv_config.obs.obs_auxiliary, hv_config.obs.obs_dims, self.device)
         self.use_contact_in_obs_max = bool(hv_config.get("use_contact_in_obs_max", False))
         self.simulator = _MjlabSimulatorView(self)
+
+        self._ctrl_delay_lo_steps, self._ctrl_delay_hi_steps = _ctrl_delay_physics_step_range(
+            hv_config.domain_rand, int(hv_config.simulator.config.sim.control_decimation)
+        )
+        self._ctrl_delay_actuators = [act for act in self.robot.actuators if getattr(act, "has_delay", False)]
+        if self._ctrl_delay_hi_steps > 0 and not self._ctrl_delay_actuators:
+            raise RuntimeError("domain_rand.randomize_ctrl_delay is enabled but no MJLab actuator reports has_delay=True")
 
         self._refresh_state()
         self.simulator.refresh()
@@ -1123,6 +1178,26 @@ class HumanoidVerseMjlabCore:
             self.simulator.refresh()
         return None, reward, reset, {"time_outs": time_outs.bool(), "aux_rewards": self.extras["aux_rewards"]}
 
+    def _sample_and_apply_ctrl_delay_lags(self, env_ids: torch.Tensor) -> None:
+        """Draw this episode's ctrl-delay lag (physics steps) for ``env_ids`` and freeze it.
+
+        MJLab's own periodic resampling is disabled on every delay-configured actuator
+        (``delay_hold_prob=1.0``, see ``make_mjlab_ufo_env_cfg``), so this is the only place
+        a lag value ever changes: once per episode, right after each reset. The lag then
+        stays constant -- via ``Actuator.set_lags`` -- until the next reset calls this again.
+        """
+        if self._ctrl_delay_hi_steps <= 0 or len(env_ids) == 0 or not self._ctrl_delay_actuators:
+            return
+        lags = torch.randint(
+            self._ctrl_delay_lo_steps,
+            self._ctrl_delay_hi_steps + 1,
+            (len(env_ids),),
+            device=self.device,
+            dtype=torch.long,
+        )
+        for act in self._ctrl_delay_actuators:
+            act.set_lags(lags, env_ids)
+
     def reset_all(self, target_states: dict[str, torch.Tensor] | None = None):
         env_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
         self.reset_idx(env_ids, target_states=target_states)
@@ -1184,6 +1259,31 @@ class HumanoidVerseMjlabCore:
         root_wxyz = torch.cat([root_xyzw[:, :3], xyzw_to_wxyz(root_xyzw[:, 3:7]), root_xyzw[:, 7:13]], dim=-1)
         self.robot.write_root_state_to_sim(root_wxyz, env_ids=env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, joint_ids=self._joint_ids, env_ids=env_ids)
+
+        if self._ctrl_delay_hi_steps > 0 and self._ctrl_delay_actuators:
+            # self.mjlab_env.reset(env_ids=env_ids) above already ran Entity.reset(), which
+            # (a) zeroes data.joint_pos_target via EntityData.clear_state -- a raw 0 rad
+            # target, not the K1 default pose -- and (b) resets every actuator's delay
+            # buffer (MJLab's Actuator.reset), then internally called write_data_to_sim()
+            # once more, which appended that raw-zero target and (because num_pushes had
+            # just been zeroed) backfilled the whole buffer with it. Left alone, every
+            # delayed episode would start with up to ctrl_delay_hi_steps physics steps of
+            # PD-to-zero-radians before the first generated action reaches the joint -- a
+            # spurious kick that FT-ctrl (delay disabled) and a lag=0 draw never see, and a
+            # confound between FT-DR and FT-ctrl. Repair it before the write_data_to_sim()
+            # call below (which is unavoidable regardless of ctrl delay, so this adds no
+            # extra scene-wide write): overwrite the target with the "zero action" pose
+            # (matching self.actions[env_ids] = 0.0 below and the default_dof_pos_offset
+            # this reset just sampled), then re-zero num_pushes on each delay buffer so its
+            # first real append -- the write_data_to_sim() call two lines down -- backfills
+            # from that corrected reference instead of the stale zero. Draw this episode's
+            # lag last, since Actuator.reset() also zeroes it.
+            zero_action_target = self.default_dof_pos[env_ids] + self.default_dof_pos_offset[env_ids]
+            self.robot.data.joint_pos_target[env_ids[:, None], self._joint_ids] = zero_action_target
+            for act in self._ctrl_delay_actuators:
+                act.reset(env_ids)
+            self._sample_and_apply_ctrl_delay_lags(env_ids)
+
         self.mjlab_env.scene.write_data_to_sim()
         self.mjlab_env.sim.forward()
         self.mjlab_env._manual_reset_pending[env_ids] = False
