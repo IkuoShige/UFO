@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -10,12 +11,21 @@ import torch
 from omegaconf import OmegaConf
 
 from humanoidverse.agents.envs.humanoidverse_mjlab import HumanoidVerseMjlabCore
-from humanoidverse.train import _resolve_training_robot_config, build_ufo_mjlab_config, parse_args as parse_train_args
 from humanoidverse.tracking_inference import (
     _expert_qpos_from_obs,
     _resolve_tracking_robot_config,
     _target_states_from_obs,
+)
+from humanoidverse.tracking_inference import (
     parse_args as parse_tracking_args,
+)
+from humanoidverse.train import (
+    _resolve_training_robot_config,
+    _stage_resume_checkpoint,
+    build_ufo_mjlab_config,
+)
+from humanoidverse.train import (
+    parse_args as parse_train_args,
 )
 from humanoidverse.utils.robot_spec import load_robot_training_spec
 
@@ -114,6 +124,35 @@ def _write_tiny_robot_with_training(root: Path, *, missing_actuator_joint: bool 
 
 
 class RobotConfigTrainingTest(unittest.TestCase):
+    def test_stage_resume_checkpoint_copies_source_and_records_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "source"
+            checkpoint = source / "checkpoint"
+            checkpoint.mkdir(parents=True)
+            (checkpoint / "train_status.json").write_text('{"global_time": 192000000}')
+            (checkpoint / "model.bin").write_bytes(b"weights")
+            target = root / "target"
+
+            staged = _stage_resume_checkpoint(source, target)
+
+            self.assertEqual(staged, target / "checkpoint")
+            self.assertEqual((staged / "model.bin").read_bytes(), b"weights")
+            provenance = json.loads((target / "resume_source.json").read_text())
+            self.assertEqual(provenance["source_train_status"]["global_time"], 192000000)
+            self.assertEqual((checkpoint / "model.bin").read_bytes(), b"weights")
+            self.assertEqual(list(target.glob(".resume-staging-*")), [])
+
+    def test_stage_resume_checkpoint_refuses_existing_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            checkpoint = root / "source" / "checkpoint"
+            checkpoint.mkdir(parents=True)
+            (checkpoint / "train_status.json").write_text('{"global_time": 1}')
+            (root / "target" / "checkpoint").mkdir(parents=True)
+            with self.assertRaisesRegex(FileExistsError, "Refusing to overwrite"):
+                _stage_resume_checkpoint(root / "source", root / "target")
+
     def test_old_g1_default_builds_cfg(self) -> None:
         cfg = build_ufo_mjlab_config(
             device="cpu",
@@ -141,6 +180,48 @@ class RobotConfigTrainingTest(unittest.TestCase):
             robot_config="configs/robots/g1_29dof.yaml",
         )
         self.assertTrue(str(cfg.env.robot_config_path).endswith("configs/robots/g1_29dof.yaml"))
+
+    def test_training_friction_override_reaches_hydra_config(self) -> None:
+        cfg = build_ufo_mjlab_config(
+            device="cpu",
+            work_dir="/tmp/ufo_unit",
+            num_envs=1,
+            num_env_steps=1,
+            seed=1,
+            use_wandb=False,
+            wandb_run_name=None,
+            smoke=True,
+            friction_range=(0.2, 0.8),
+        )
+        self.assertIn("domain_rand.friction_range=[0.2,0.8]", cfg.env.hydra_overrides)
+
+    def test_training_friction_override_rejects_invalid_range(self) -> None:
+        with self.assertRaisesRegex(ValueError, "0 <= low <= high"):
+            build_ufo_mjlab_config(
+                device="cpu",
+                work_dir="/tmp/ufo_unit",
+                num_envs=1,
+                num_env_steps=1,
+                seed=1,
+                use_wandb=False,
+                wandb_run_name=None,
+                smoke=True,
+                friction_range=(0.8, 0.2),
+            )
+
+    def test_training_friction_override_requires_two_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "exactly two values"):
+            build_ufo_mjlab_config(
+                device="cpu",
+                work_dir="/tmp/ufo_unit",
+                num_envs=1,
+                num_env_steps=1,
+                seed=1,
+                use_wandb=False,
+                wandb_run_name=None,
+                smoke=True,
+                friction_range=[0.2],
+            )
 
     def test_manifest_robot_config_is_used_when_cli_missing(self) -> None:
         argv = [

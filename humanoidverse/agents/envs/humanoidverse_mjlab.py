@@ -51,6 +51,68 @@ G1_MJLAB_MJCF_PATH = "humanoidverse/data/robots/g1_mjlab/g1_29dof.xml"
 G1_MJLAB_ACTUATOR_SOURCE = "g1-mode_15"
 
 
+def _strip_embedded_ground_planes(spec: Any) -> tuple[str, ...]:
+    """Remove world-level planes from a robot asset before MJLab attaches it.
+
+    ``SceneCfg.terrain`` owns the ground surface.  Some robot MJCFs (notably the
+    Booster K1 asset) also contain a world-level plane.  Leaving that plane in
+    the entity produces two coincident contacts and prevents terrain friction
+    randomization from controlling the effective contact coefficient.
+    """
+
+    import mujoco
+
+    removed: list[str] = []
+    for geom in list(spec.geoms):
+        parent_name = geom.parent.name if geom.parent is not None else None
+        if geom.type == mujoco.mjtGeom.mjGEOM_PLANE and parent_name == "world":
+            removed.append(geom.name or "<unnamed>")
+            spec.delete(geom)
+    return tuple(removed)
+
+
+def _randomize_ground_contact_friction(
+    env: Any,
+    env_ids: torch.Tensor | None,
+    *,
+    ranges: tuple[float, float],
+    robot_asset_cfg: Any,
+    terrain_asset_cfg: Any,
+) -> None:
+    """Set one material-friction draw on both sides of every ground contact.
+
+    MuJoCo combines equal-priority geom friction using the elementwise maximum.
+    Randomizing only the robot while leaving terrain friction at 1.0 therefore
+    cannot create a contact coefficient below 1.0.  A shared per-environment
+    sample on robot and terrain geoms makes the requested range the *effective*
+    tangential-friction range, including for hands and knees during get-up.
+    """
+
+    low, high = (float(ranges[0]), float(ranges[1]))
+    if low < 0.0 or high < low:
+        raise ValueError(f"Invalid friction range: ({low}, {high})")
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    else:
+        env_ids = env_ids.to(device=env.device, dtype=torch.long)
+
+    robot = env.scene[robot_asset_cfg.name]
+    terrain = env.scene[terrain_asset_cfg.name]
+    robot_geom_ids = robot.indexing.geom_ids[robot_asset_cfg.geom_ids]
+    terrain_geom_ids = terrain.indexing.geom_ids[terrain_asset_cfg.geom_ids]
+    geom_ids = torch.cat((robot_geom_ids, terrain_geom_ids)).to(device=env.device, dtype=torch.long)
+
+    samples = torch.empty((len(env_ids), 1), device=env.device, dtype=env.sim.model.geom_friction.dtype)
+    samples.uniform_(low, high)
+    env_grid, geom_grid = torch.meshgrid(env_ids, geom_ids, indexing="ij")
+    env.sim.model.geom_friction[env_grid, geom_grid, 0] = samples.expand(-1, len(geom_ids))
+
+
+# Tell MJLab to allocate independent per-world friction storage before this event
+# runs.  Setting the attribute avoids importing MJLab at module import time.
+_randomize_ground_contact_friction.model_fields = ("geom_friction",)
+
+
 def _resolve_humanoidverse_path(path_value: str | os.PathLike[str]) -> str:
     path = Path(path_value).expanduser()
     if path.is_absolute():
@@ -399,6 +461,7 @@ def make_mjlab_ufo_env_cfg(
         # actuators are removed so MJLab adds equivalent position actuators.
         for actuator in list(spec.actuators):
             spec.delete(actuator)
+        _strip_embedded_ground_planes(spec)
         return spec
 
     stiffness = _to_float_dict(config.robot.control.stiffness)
@@ -551,14 +614,16 @@ def make_mjlab_ufo_env_cfg(
             },
         )
     if bool(domain_rand.get("randomize_friction", False)):
-        events["random_geom_friction"] = EventTermCfg(
+        friction_range = tuple(float(x) for x in _to_list(domain_rand.friction_range))
+        if len(friction_range) != 2 or friction_range[0] < 0.0 or friction_range[1] < friction_range[0]:
+            raise ValueError(f"domain_rand.friction_range must be [low, high] with 0 <= low <= high: {friction_range}")
+        events["random_ground_contact_friction"] = EventTermCfg(
             mode="startup",
-            func=mjlab_dr.geom_friction,
+            func=_randomize_ground_contact_friction,
             params={
-                "asset_cfg": SceneEntityCfg("robot", geom_names=".*"),
-                "operation": "abs",
-                "axes": [0],
-                "ranges": tuple(float(x) for x in _to_list(domain_rand.friction_range)),
+                "robot_asset_cfg": SceneEntityCfg("robot", geom_names=".*"),
+                "terrain_asset_cfg": SceneEntityCfg("terrain", geom_names="terrain"),
+                "ranges": friction_range,
             },
         )
 
