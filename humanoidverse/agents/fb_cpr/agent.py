@@ -11,11 +11,11 @@ from torch import autograd
 from torch.amp import autocast
 from torch.utils._pytree import tree_map
 
+from ...distributed import average_gradients
 from ..base import BaseConfig
 from ..fb.agent import FBAgent, FBAgentTrainConfig
 from ..nn_models import _soft_update_params, eval_mode
 from ..pytree_utils import tree_get_batch_size
-from ...distributed import average_gradients
 from .model import FBcprModel, FBcprModelConfig
 
 
@@ -169,8 +169,8 @@ class FBcprAgent(FBAgent):
         return z_expert
 
     def update(self, replay_buffer, step: int) -> Dict[str, torch.Tensor]:
-        expert_batch = replay_buffer["expert_slicer"].sample(self.cfg.train.batch_size)
-        train_batch = replay_buffer["train"].sample(self.cfg.train.batch_size)
+        expert_batch, expert_batch_retries = self._sample_finite_batch(replay_buffer["expert_slicer"], label="expert_batch")
+        train_batch, train_batch_retries = self._sample_finite_batch(replay_buffer["train"], label="train_batch")
 
         train_obs, train_action, train_next_obs = (
             tree_map(lambda x: x.to(self.device), train_batch["observation"]),
@@ -183,6 +183,7 @@ class FBcprAgent(FBAgent):
             tree_map(lambda x: x.to(self.device), expert_batch["next"]["observation"]),
         )
 
+        self._require_finite(self._model._obs_normalizer.state_dict(), label="obs_normalizer.state")
         self._model._obs_normalizer(train_obs)
         self._model._obs_normalizer(train_next_obs)
 
@@ -195,10 +196,15 @@ class FBcprAgent(FBAgent):
                 self._model._obs_normalizer(expert_obs),
                 self._model._obs_normalizer(expert_next_obs),
             )
+        self._require_finite(
+            (train_obs, train_next_obs, expert_obs, expert_next_obs),
+            label="normalized_observations",
+        )
 
         torch.compiler.cudagraph_mark_step_begin()
         expert_z = self.encode_expert(next_obs=expert_next_obs)
         train_z = train_batch["z"].to(self.device)
+        self._require_finite((expert_z, train_z), label="update_latents")
 
         # train the discriminator
         grad_penalty = self.cfg.train.grad_penalty_discriminator if self.cfg.train.grad_penalty_discriminator > 0 else None
@@ -211,6 +217,7 @@ class FBcprAgent(FBAgent):
         )
 
         z = self.sample_mixed_z(train_goal=train_next_obs, expert_encodings=expert_z).clone()
+        self._require_finite(z, label="sampled_z")
         self.z_buffer.add(z)
 
         if self.cfg.train.relabel_ratio is not None:
@@ -232,6 +239,8 @@ class FBcprAgent(FBAgent):
                 clip_grad_norm=clip_grad_norm,
             )
         )
+        metrics["nonfinite_train_batch_retries"] = torch.tensor(float(train_batch_retries), device=self.device)
+        metrics["nonfinite_expert_batch_retries"] = torch.tensor(float(expert_batch_retries), device=self.device)
         metrics.update(
             self.update_critic(
                 obs=train_obs,
@@ -354,6 +363,7 @@ class FBcprAgent(FBAgent):
         self.discriminator_optimizer.zero_grad(set_to_none=True)
         loss.backward()
         average_gradients(self._model._discriminator.parameters())
+        self._check_or_clip_gradients(self._model._discriminator.parameters(), None)
         self.discriminator_optimizer.step()
 
         with torch.no_grad():
@@ -394,6 +404,7 @@ class FBcprAgent(FBAgent):
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
         average_gradients(self._model._critic.parameters())
+        self._check_or_clip_gradients(self._model._critic.parameters(), None)
         self.critic_optimizer.step()
 
         with torch.no_grad():
@@ -434,8 +445,7 @@ class FBcprAgent(FBAgent):
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
         average_gradients(self._model._actor.parameters())
-        if clip_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self._model._actor.parameters(), clip_grad_norm)
+        self._check_or_clip_gradients(self._model._actor.parameters(), clip_grad_norm)
         self.actor_optimizer.step()
 
         with torch.no_grad():

@@ -14,11 +14,11 @@ import torch.nn.functional as F
 from torch.amp import autocast
 from torch.utils._pytree import tree_map
 
+from ...distributed import average_gradients
 from ..base import BaseConfig
 from ..envs.utils.gym_spaces import json_to_space, space_to_json
 from ..misc.zbuffer import ZBuffer
 from ..nn_models import _soft_update_params, eval_mode, weight_init
-from ...distributed import average_gradients
 from .model import FBModel, FBModelConfig
 
 
@@ -43,6 +43,10 @@ class FBAgentTrainConfig(BaseConfig):
     rollout_expert_trajectories: bool = False
     rollout_expert_trajectories_length: int = 250
     rollout_expert_trajectories_percentage: float = 0.25
+    # A single non-finite transition must not be allowed to update BatchNorm's
+    # running statistics.  Old replay checkpoints can predate rollout-time
+    # validation, so retry sampled batches before touching model state.
+    nonfinite_batch_retries: int = 8
 
 
 class FBAgentConfig(BaseConfig):
@@ -141,6 +145,81 @@ class FBAgent:
             self.update_fb = CudaGraphModule(self.update_fb, warmup=5)
             self.update_actor = CudaGraphModule(self.update_actor, warmup=5)
 
+    @staticmethod
+    def _floating_tensors(value):
+        if isinstance(value, torch.Tensor):
+            if value.numel() > 0 and (torch.is_floating_point(value) or torch.is_complex(value)):
+                yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from FBAgent._floating_tensors(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                yield from FBAgent._floating_tensors(item)
+
+    @classmethod
+    def _all_finite(cls, value) -> bool:
+        """Check each device with one host synchronization on the finite path."""
+
+        checks_by_device: dict[torch.device, list[torch.Tensor]] = {}
+        for tensor in cls._floating_tensors(value):
+            checks_by_device.setdefault(tensor.device, []).append(torch.isfinite(tensor).all())
+        return all(bool(torch.stack(checks).all().item()) for checks in checks_by_device.values())
+
+    @staticmethod
+    def _nonfinite_paths(value, prefix: str = "batch") -> list[str]:
+        """Return tensor paths containing NaN/Inf without retaining tensor data."""
+
+        bad: list[str] = []
+        if isinstance(value, torch.Tensor):
+            if value.numel() > 0 and (torch.is_floating_point(value) or torch.is_complex(value)):
+                finite = torch.isfinite(value)
+                if not bool(finite.all().item()):
+                    bad.append(f"{prefix} ({int((~finite).sum().item())} non-finite values)")
+            return bad
+        if isinstance(value, dict):
+            for key, item in value.items():
+                bad.extend(FBAgent._nonfinite_paths(item, f"{prefix}.{key}"))
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                bad.extend(FBAgent._nonfinite_paths(item, f"{prefix}[{index}]"))
+        return bad
+
+    @classmethod
+    def _require_finite(cls, value, *, label: str) -> None:
+        if cls._all_finite(value):
+            return
+        bad = cls._nonfinite_paths(value, label)
+        if bad:
+            details = "\n".join(f"  - {path}" for path in bad[:20])
+            more = "" if len(bad) <= 20 else f"\n  ... {len(bad) - 20} more fields"
+            raise FloatingPointError(f"Non-finite FB training input detected before optimizer update:\n{details}{more}")
+
+    def _sample_finite_batch(self, buffer, *, label: str):
+        """Sample without letting a corrupt replay item poison observation stats."""
+
+        attempts = max(1, int(self.cfg.train.nonfinite_batch_retries) + 1)
+        last_bad: list[str] = []
+        for retry in range(attempts):
+            batch = buffer.sample(self.cfg.train.batch_size)
+            if self._all_finite(batch):
+                return batch, retry
+            last_bad = self._nonfinite_paths(batch, label)
+        details = "\n".join(f"  - {path}" for path in last_bad[:20])
+        raise FloatingPointError(
+            f"Could not sample a finite {label} after {attempts} attempts. "
+            "The replay checkpoint should be audited before resuming:\n"
+            f"{details}"
+        )
+
+    @staticmethod
+    def _check_or_clip_gradients(parameters, clip_grad_norm: float | None) -> None:
+        """Reject non-finite gradients before optimizer.step()."""
+
+        params = tuple(parameters)
+        max_norm = float("inf") if clip_grad_norm is None else float(clip_grad_norm)
+        torch.nn.utils.clip_grad_norm_(params, max_norm, error_if_nonfinite=True)
+
     def act(self, obs: torch.Tensor | dict[str, torch.Tensor], z: torch.Tensor, mean: bool = True) -> torch.Tensor:
         return self._model.act(obs, z, mean)
 
@@ -160,7 +239,7 @@ class FBAgent:
         return z
 
     def update(self, replay_buffer, step: int) -> Dict[str, torch.Tensor]:
-        batch = replay_buffer["train"].sample(self.cfg.train.batch_size)
+        batch, batch_retries = self._sample_finite_batch(replay_buffer["train"], label="train_batch")
 
         obs, action, next_obs, terminated = (
             batch["observation"],
@@ -170,10 +249,12 @@ class FBAgent:
         )
         discount = self.cfg.train.discount * ~terminated
 
+        self._require_finite(self._model._obs_normalizer.state_dict(), label="obs_normalizer.state")
         self._model._obs_normalizer(obs)
         self._model._obs_normalizer(next_obs)
         with torch.no_grad(), eval_mode(self._model._obs_normalizer):
             obs, next_obs = self._model._obs_normalizer(obs), self._model._obs_normalizer(next_obs)
+        self._require_finite((obs, next_obs), label="normalized_train_obs")
 
         torch.compiler.cudagraph_mark_step_begin()
         z = self.sample_mixed_z(train_goal=next_obs).clone()
@@ -201,6 +282,7 @@ class FBAgent:
                 clip_grad_norm=clip_grad_norm,
             )
         )
+        metrics["nonfinite_batch_retries"] = torch.tensor(float(batch_retries), device=self.device)
 
         with torch.no_grad():
             _soft_update_params(self._forward_map_paramlist, self._target_forward_map_paramlist, self.fb_target_tau)
@@ -275,8 +357,13 @@ class FBAgent:
         fb_loss.backward()
         average_gradients((*self._model._forward_map.parameters(), *self._model._backward_map.parameters()))
         if clip_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self._model._forward_map.parameters(), clip_grad_norm)
-            torch.nn.utils.clip_grad_norm_(self._model._backward_map.parameters(), clip_grad_norm)
+            self._check_or_clip_gradients(self._model._forward_map.parameters(), clip_grad_norm)
+            self._check_or_clip_gradients(self._model._backward_map.parameters(), clip_grad_norm)
+        else:
+            self._check_or_clip_gradients(
+                (*self._model._forward_map.parameters(), *self._model._backward_map.parameters()),
+                None,
+            )
         self.forward_optimizer.step()
         self.backward_optimizer.step()
 
@@ -322,8 +409,7 @@ class FBAgent:
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
         average_gradients(self._model._actor.parameters())
-        if clip_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self._model._actor.parameters(), clip_grad_norm)
+        self._check_or_clip_gradients(self._model._actor.parameters(), clip_grad_norm)
         self.actor_optimizer.step()
 
         return {"actor_loss": actor_loss.detach(), "q": Q.mean().detach()}
@@ -347,7 +433,8 @@ class FBAgent:
     
     def _sample_tracking_z(self, replay_buffer, batch_dim, traj_length):
         batch = replay_buffer["expert_slicer"].sample(batch_dim * traj_length, seq_length=traj_length)  # N*T x obs_dim
-        z = self._model.backward_map(batch["next"]["observation"])  # NT x z_dim
+        next_obs = tree_map(lambda x: x.to(self.device), batch["next"]["observation"])
+        z = self._model.backward_map(next_obs)  # NT x z_dim
         z = z.view(batch_dim, traj_length, z.shape[-1])  # N x T x z_dim
         for step in range(traj_length):
             end_idx = min(step + self.cfg.model.seq_length, traj_length)
